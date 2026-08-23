@@ -22,6 +22,7 @@ class InspectionLimits:
     max_total_bytes: int = 384 * 1024
     max_response_bytes: int = 2 * 1024 * 1024
     request_timeout_seconds: float = 10.0
+    inspection_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         numeric_values = (
@@ -31,6 +32,7 @@ class InspectionLimits:
             self.max_total_bytes,
             self.max_response_bytes,
             self.request_timeout_seconds,
+            self.inspection_timeout_seconds,
         )
         if any(value <= 0 for value in numeric_values):
             raise ValueError("all inspection limits must be positive")

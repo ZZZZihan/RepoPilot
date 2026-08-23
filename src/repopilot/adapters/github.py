@@ -54,6 +54,13 @@ class GitHubRepositoryInspector:
         self._transport = transport
 
     async def inspect(self, repository: GitHubRepositoryInput) -> RepositorySnapshot:
+        try:
+            async with asyncio.timeout(self._limits.inspection_timeout_seconds):
+                return await self._inspect(repository)
+        except TimeoutError as exc:
+            raise RepositoryTimeoutError("GitHub inspection deadline was exceeded") from exc
+
+    async def _inspect(self, repository: GitHubRepositoryInput) -> RepositorySnapshot:
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "RepoPilot/0.1.0",
@@ -75,7 +82,7 @@ class GitHubRepositoryInspector:
             metadata = await self._get_json(
                 client,
                 f"/repos/{owner}/{name}",
-                max_bytes=64 * 1024,
+                max_bytes=min(64 * 1024, self._limits.max_response_bytes),
             )
             default_branch = metadata.get("default_branch")
             if not isinstance(default_branch, str) or not default_branch:
@@ -120,7 +127,15 @@ class GitHubRepositoryInspector:
                 async with semaphore:
                     return await self._fetch_document(client, owner, name, selected)
 
-            fetched = await asyncio.gather(*(fetch(item) for item in selection.entries))
+            tasks = [asyncio.create_task(fetch(item)) for item in selection.entries]
+            try:
+                fetched = await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             documents = tuple(document for document in fetched if document is not None)
             if not documents:
                 raise UnsupportedRepositoryError(
@@ -150,17 +165,22 @@ class GitHubRepositoryInspector:
     def _parse_entries(self, raw_tree: list[Any]) -> list[TreeEntry]:
         entries: list[TreeEntry] = []
         for item in raw_tree:
-            if not isinstance(item, dict) or item.get("type") != "blob":
+            if not isinstance(item, dict):
+                raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
+            entry_type = item.get("type")
+            if entry_type not in {"blob", "tree", "commit"}:
+                raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
+            if entry_type != "blob":
                 continue
             path = item.get("path")
             size = item.get("size")
             blob_sha = item.get("sha")
             if not isinstance(path, str) or not is_safe_repository_path(path):
-                continue
-            if size is not None and (not isinstance(size, int) or size < 0):
-                continue
+                raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
             if not isinstance(blob_sha, str) or not _GIT_OBJECT_ID.fullmatch(blob_sha.lower()):
-                continue
+                raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
             entries.append(TreeEntry(path=path, size=size, blob_sha=blob_sha.lower()))
             if len(entries) > self._limits.max_tree_entries:
                 break
@@ -177,7 +197,10 @@ class GitHubRepositoryInspector:
         blob_sha = selected.entry.blob_sha
         if blob_sha is None:
             raise RepositoryUpstreamError("GitHub tree entry did not include a blob identifier")
-        max_blob_response = (self._limits.max_file_bytes * 4 // 3) + 16 * 1024
+        max_blob_response = min(
+            (self._limits.max_file_bytes * 4 // 3) + 16 * 1024,
+            self._limits.max_response_bytes,
+        )
         blob = await self._get_json(
             client,
             f"/repos/{owner}/{name}/git/blobs/{blob_sha}",
@@ -194,6 +217,8 @@ class GitHubRepositoryInspector:
             raise InspectionLimitExceededError(
                 "GitHub blob exceeded the configured file byte limit"
             )
+        if selected.entry.size != len(payload):
+            raise RepositoryUpstreamError("GitHub blob payload did not match its tree entry size")
         try:
             content = payload.decode("utf-8")
         except UnicodeDecodeError:
@@ -239,12 +264,14 @@ class GitHubRepositoryInspector:
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
-        if response.status_code < 400:
+        if 200 <= response.status_code < 300:
             return
         if response.status_code == 404:
             raise RepositoryNotFoundError("repository or requested ref was not found")
+        rate_limit_remaining = response.headers.get("x-ratelimit-remaining", "").strip()
+        has_retry_after = response.headers.get("retry-after") is not None
         if response.status_code == 429 or (
-            response.status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0"
+            response.status_code == 403 and (rate_limit_remaining == "0" or has_retry_after)
         ):
             raise RepositoryRateLimitedError("GitHub API rate limit was reached")
         if response.status_code in {401, 403}:

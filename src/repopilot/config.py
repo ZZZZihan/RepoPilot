@@ -64,6 +64,9 @@ class Settings:
             request_timeout_seconds=float(
                 _environment_int("REPOPILOT_REQUEST_TIMEOUT_SECONDS", 10, minimum=1, maximum=60)
             ),
+            inspection_timeout_seconds=float(
+                _environment_int("REPOPILOT_INSPECTION_TIMEOUT_SECONDS", 30, minimum=1, maximum=300)
+            ),
         )
         return cls(
             database_path=Path(os.getenv("REPOPILOT_DATABASE_PATH", "var/repopilot.db")),

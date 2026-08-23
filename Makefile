@@ -1,4 +1,4 @@
-.PHONY: sync run test lint format typecheck check
+.PHONY: sync run test lint format typecheck check smoke-m0
 
 sync:
 	uv sync --locked --all-groups
@@ -24,3 +24,5 @@ check:
 	uv run mypy src
 	uv run pytest
 
+smoke-m0:
+	@uv run --frozen python scripts/m0_http_persistence_smoke.py

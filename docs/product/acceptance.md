@@ -26,6 +26,17 @@
 4. 读取持久化计划并完成批准；
 5. 重启进程后仍能读到批准状态。
 
+可复现的本地 smoke 使用固定根目录夹具，因此不会访问 GitHub。它真实启动两个
+`reload=False` 的 Uvicorn 进程，在 OS 分配的 loopback 端口上验证完整 HTTP 链路、
+进程重启、SQLite WAL/完整性/文件权限以及 PID/端口清理，并只输出脱敏 JSON 证据：
+
+```bash
+make smoke-m0
+```
+
+该 JSON Evidence Capsule 是本地固定夹具验收，不等价于实时 GitHub 适配器验收；若要
+更新实时验收记录，必须另行记录日期、仓库、ref 与 tree SHA。
+
 实时 GitHub smoke 会消耗外部 API 配额，并受仓库状态与网络影响；自动化 CI 不依赖它。任何实时验证结果都必须单独记录日期、仓库/ref 和 tree SHA。
 
 ### Recorded result: passed

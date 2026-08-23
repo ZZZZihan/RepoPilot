@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,14 +17,37 @@ CREATE_REQUEST = {
     "issue": {
         "number": 17,
         "url": "https://github.com/acme/tiny-python/issues/17",
-        "title": "Give divide() a clear zero-divisor error",
-        "body": "Update divide in calculator.py and keep a regression test for zero divisors.",
+        "title": "Give divide() an explicit zero-divisor error",
+        "body": (
+            'In calculator.py, make divide() raise ValueError("divisor must not be zero") '
+            "when divisor is zero. Preserve non-zero quotients and add a regression test "
+            "asserting the exact exception type and message."
+        ),
     },
 }
 
 
+def test_golden_issue_describes_an_unsatisfied_observable_delta(
+    fixture_repository_root: Path,
+) -> None:
+    source = (fixture_repository_root / "src/tinycalc/calculator.py").read_text(encoding="utf-8")
+    fixture_tests = (fixture_repository_root / "tests/test_calculator.py").read_text(
+        encoding="utf-8"
+    )
+    readme = (fixture_repository_root / "README.md").read_text(encoding="utf-8")
+
+    assert "return dividend / divisor" in source
+    assert "ValueError" not in source
+    assert "divisor must not be zero" not in source
+    assert "test_divide_by_zero" not in fixture_tests
+    assert "ZeroDivisionError" in readme
+    assert 'ValueError("divisor must not be zero")' in CREATE_REQUEST["issue"]["body"]
+
+
 def test_create_persist_validate_and_approve_plan_end_to_end(
-    settings: Settings, fixture_inspector: FixedRootRepositoryInspector
+    settings: Settings,
+    fixture_inspector: FixedRootRepositoryInspector,
+    fixture_repository_root: Path,
 ) -> None:
     app = create_app(settings=settings, inspector=fixture_inspector)
     with TestClient(app) as client:
@@ -54,10 +78,39 @@ def test_create_persist_validate_and_approve_plan_end_to_end(
         for step in created["steps"]:
             for reference in step["file_references"]:
                 assert set(reference["evidence_ids"]) <= evidence_ids
-        implementation_paths = {
-            reference["path"] for reference in created["steps"][1]["file_references"]
+        steps_by_kind = {step["kind"]: step for step in created["steps"]}
+        assert [
+            reference["path"] for reference in steps_by_kind["analysis"]["file_references"]
+        ] == [
+            "src/tinycalc/calculator.py",
+            "tests/test_calculator.py",
+            "README.md",
+        ]
+        assert [
+            reference["path"] for reference in steps_by_kind["implementation"]["file_references"]
+        ] == ["src/tinycalc/calculator.py"]
+        assert [reference["path"] for reference in steps_by_kind["test"]["file_references"]] == [
+            "tests/test_calculator.py"
+        ]
+        assert (
+            'ValueError("divisor must not be zero")'
+            in steps_by_kind["implementation"]["description"]
+        )
+        assert 'ValueError("divisor must not be zero")' in steps_by_kind["test"]["description"]
+
+        evidence_by_path = {item["path"]: item for item in created["evidence"]}
+        expected_evidence_terms = {
+            "README.md": {"divide", "zero"},
+            "src/tinycalc/calculator.py": {"divide", "divisor", "zero"},
+            "tests/test_calculator.py": {"divide", "quotient"},
         }
-        assert "src/tinycalc/calculator.py" in implementation_paths
+        for path, expected_terms in expected_evidence_terms.items():
+            evidence_item = evidence_by_path[path]
+            lines = (fixture_repository_root / path).read_text(encoding="utf-8").splitlines()
+            snippet = "\n".join(
+                lines[evidence_item["line_start"] - 1 : evidence_item["line_end"]]
+            ).lower()
+            assert all(term in snippet for term in expected_terms)
         assert created["verification_intents"] == [
             {
                 "tool": "pytest",

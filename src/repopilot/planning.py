@@ -28,15 +28,48 @@ from repopilot.models import (
 from repopilot.storage import SQLitePlanStore, utc_now
 
 _NON_IDENTIFIER = re.compile(r"[^a-z0-9_]+")
+_TEXT_TOKEN = re.compile(r"[a-z][a-z0-9]*")
+_SYMBOL_REFERENCE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*\(", re.IGNORECASE)
+_FILE_REFERENCE = re.compile(
+    r"(?<![a-z0-9_.-])(?:[a-z0-9_.-]+/)*[a-z0-9_.-]+\.(?:cfg|ini|md|py|toml|yaml|yml)"
+    r"(?![a-z0-9_.-])",
+    re.IGNORECASE,
+)
+_ISSUE_STOP_WORDS = {
+    "add",
+    "behavior",
+    "change",
+    "clear",
+    "error",
+    "exact",
+    "from",
+    "give",
+    "into",
+    "keep",
+    "message",
+    "preserve",
+    "raise",
+    "regression",
+    "return",
+    "should",
+    "test",
+    "tests",
+    "that",
+    "this",
+    "update",
+    "when",
+    "with",
+}
 
 
 class PlanBuilder:
     """Turn a bounded snapshot into one deterministic, schema-validated plan."""
 
     def build(self, snapshot: RepositorySnapshot, issue: IssueInput) -> ImplementationPlan:
-        evidence = self._build_evidence(snapshot.documents)
-        evidence_by_path = {item.path: item for item in evidence}
         issue_text = f"{issue.title}\n{issue.body}".lower()
+        evidence = self._build_evidence(snapshot.documents, issue_text)
+        evidence_by_path = {item.path: item for item in evidence}
+        issue_delta = self._issue_delta(issue)
 
         source_documents = self._rank_documents(
             snapshot.documents, issue_text, EvidenceCategory.SOURCE
@@ -47,18 +80,25 @@ class PlanBuilder:
             for document in snapshot.documents
             if document.category in {EvidenceCategory.PROJECT_CONFIG, EvidenceCategory.TEST_CONFIG}
         ]
-        readme_documents = [
-            document
-            for document in snapshot.documents
-            if document.category is EvidenceCategory.README
-        ]
+        readme_documents = self._rank_documents(
+            snapshot.documents, issue_text, EvidenceCategory.README
+        )
 
         fallback_document = (
-            source_documents + config_documents + test_documents + readme_documents
+            source_documents
+            + test_documents
+            + readme_documents
+            + config_documents
+            + list(snapshot.documents)
         )[0]
-        analysis_documents = (
-            source_documents or config_documents or test_documents or readme_documents
-        )[:2]
+        analysis_documents: list[InspectedDocument] = []
+        for candidates in (source_documents, test_documents, readme_documents):
+            if candidates and candidates[0].path not in {
+                document.path for document in analysis_documents
+            }:
+                analysis_documents.append(candidates[0])
+        if not analysis_documents:
+            analysis_documents = (config_documents or list(snapshot.documents))[:2]
         implementation_references = self._implementation_references(
             snapshot, source_documents, evidence_by_path, fallback_document
         )
@@ -95,8 +135,9 @@ class PlanBuilder:
                 kind=StepKind.IMPLEMENTATION,
                 title="Implement the smallest repository-local change",
                 description=(
-                    "Change only the Python implementation paths supported by the inspected "
-                    "layout, preserving existing public behavior not named by the issue."
+                    f"Apply the requested delta: {issue_delta} Change only the strongest "
+                    "issue-supported Python implementation path, preserving existing public "
+                    "behavior not named by the Issue."
                 ),
                 file_references=implementation_references,
             ),
@@ -105,8 +146,8 @@ class PlanBuilder:
                 kind=StepKind.TEST,
                 title="Add regression coverage for the Issue behavior",
                 description=(
-                    "Encode the requested behavior and at least one relevant negative or edge "
-                    "case in the repository's observed test layout."
+                    f"Encode the requested delta: {issue_delta} Assert the observable behavior "
+                    "and at least one relevant negative or edge case in the observed test layout."
                 ),
                 file_references=test_references,
             ),
@@ -187,8 +228,10 @@ class PlanBuilder:
         # Force a complete schema round trip at construction, not only at HTTP serialization.
         return ImplementationPlan.model_validate_json(plan.model_dump_json())
 
-    @staticmethod
-    def _build_evidence(documents: tuple[InspectedDocument, ...]) -> list[EvidenceItem]:
+    @classmethod
+    def _build_evidence(
+        cls, documents: tuple[InspectedDocument, ...], issue_text: str
+    ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         observations = {
             EvidenceCategory.README: "README records the repository's stated purpose or usage.",
@@ -204,7 +247,7 @@ class PlanBuilder:
             ),
         }
         for index, document in enumerate(documents, start=1):
-            line_start, line_end = PlanBuilder._evidence_line_window(document)
+            line_start, line_end = cls._evidence_line_window(document, issue_text)
             evidence.append(
                 EvidenceItem(
                     id=f"E{index}",
@@ -218,11 +261,29 @@ class PlanBuilder:
             )
         return evidence
 
-    @staticmethod
-    def _evidence_line_window(document: InspectedDocument) -> tuple[int, int]:
+    @classmethod
+    def _evidence_line_window(cls, document: InspectedDocument, issue_text: str) -> tuple[int, int]:
         lines = document.content.splitlines()
         if not lines:
             return 1, 1
+
+        issue_signals = cls._meaningful_tokens(issue_text) | cls._symbol_references(issue_text)
+
+        def anchor_score(line: str) -> int:
+            stripped = line.strip().casefold()
+            if document.category in {EvidenceCategory.SOURCE, EvidenceCategory.TEST}:
+                return int(stripped.startswith(("def ", "class ")))
+            return 0
+
+        scored_lines = [
+            (len(issue_signals & cls._text_tokens(line)), anchor_score(line), index)
+            for index, line in enumerate(lines)
+        ]
+        best_score, _, best_index = max(scored_lines, key=lambda item: (item[0], item[1], -item[2]))
+        if best_score:
+            target_line = best_index + 1
+            return max(1, target_line - 2), min(len(lines), target_line + 2)
+
         needles = {
             EvidenceCategory.README: ("#",),
             EvidenceCategory.PROJECT_CONFIG: ("[project]", "[tool.", "requirements"),
@@ -241,30 +302,72 @@ class PlanBuilder:
         line_start = start_index + 1
         return line_start, min(len(lines), line_start + 2)
 
-    @staticmethod
+    @classmethod
     def _rank_documents(
+        cls,
         documents: tuple[InspectedDocument, ...],
         issue_text: str,
         category: EvidenceCategory,
     ) -> list[InspectedDocument]:
         matching = [document for document in documents if document.category is category]
-        issue_terms = {
-            term for term in re.findall(r"[a-z_][a-z0-9_]{2,}", issue_text) if len(term) >= 4
+        issue_terms = cls._meaningful_tokens(issue_text)
+        issue_symbols = cls._symbol_references(issue_text)
+        explicit_references = {
+            reference.casefold() for reference in _FILE_REFERENCE.findall(issue_text)
+        }
+        explicit_paths = {reference for reference in explicit_references if "/" in reference}
+        explicit_names = {PurePosixPath(reference).name for reference in explicit_references}
+
+        def relevance(document: InspectedDocument) -> tuple[int, int, int, int]:
+            path = document.path.casefold()
+            name = PurePosixPath(path).name
+            document_tokens = cls._text_tokens(f"{path}\n{document.content}")
+            return (
+                int(path in explicit_paths),
+                int(name in explicit_names),
+                len(issue_symbols & document_tokens),
+                len(issue_terms & document_tokens),
+            )
+
+        scored = [(document, relevance(document)) for document in matching]
+        relevant = [(document, score) for document, score in scored if any(score)]
+
+        return [
+            document
+            for document, _ in sorted(
+                relevant,
+                key=lambda item: (
+                    -item[1][0],
+                    -item[1][1],
+                    -item[1][2],
+                    -item[1][3],
+                    item[0].path.casefold(),
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _text_tokens(value: str) -> set[str]:
+        return set(_TEXT_TOKEN.findall(value.casefold().replace("_", " ")))
+
+    @classmethod
+    def _meaningful_tokens(cls, value: str) -> set[str]:
+        return {
+            token
+            for token in cls._text_tokens(value)
+            if len(token) >= 4 and token not in _ISSUE_STOP_WORDS
         }
 
-        def relevance(document: InspectedDocument) -> int:
-            searchable = f"{document.path}\n{document.content}".lower()
-            return sum(term in searchable for term in issue_terms)
+    @staticmethod
+    def _symbol_references(value: str) -> set[str]:
+        return {symbol.casefold() for symbol in _SYMBOL_REFERENCE.findall(value)}
 
-        return sorted(
-            matching,
-            key=lambda document: (
-                -relevance(document),
-                document.path.lower() not in issue_text,
-                PurePosixPath(document.path).name.lower() not in issue_text,
-                document.path.lower(),
-            ),
-        )
+    @staticmethod
+    def _issue_delta(issue: IssueInput) -> str:
+        normalized = " ".join((issue.body or issue.title).split())
+        if len(normalized) <= 900:
+            return normalized
+        return f"{normalized[:897].rstrip()}..."
 
     @staticmethod
     def _reference(
@@ -290,14 +393,14 @@ class PlanBuilder:
         fallback_document: InspectedDocument,
     ) -> list[FileReference]:
         if source_documents:
+            document = source_documents[0]
             return [
                 self._reference(
                     document,
                     evidence_by_path,
                     action=FileAction.MODIFY,
-                    reason="Observed Python implementation path most closely related to the Issue.",
+                    reason="Strongest issue-supported Python implementation path.",
                 )
-                for document in source_documents[:2]
             ]
         package_name = _NON_IDENTIFIER.sub("_", snapshot.repository.name.lower()).strip("_")
         package_name = package_name or "repopilot_change"
@@ -307,8 +410,8 @@ class PlanBuilder:
                 action=FileAction.CREATE,
                 exists=False,
                 reason=(
-                    "No Python source file was observed; this path follows the configured src "
-                    "layout."
+                    "No issue-relevant Python source file was observed; this path follows the "
+                    "configured src layout."
                 ),
                 evidence_ids=[evidence_by_path[fallback_document.path].id],
             )
@@ -323,14 +426,14 @@ class PlanBuilder:
         fallback_document: InspectedDocument,
     ) -> list[FileReference]:
         if test_documents:
+            document = test_documents[0]
             return [
                 self._reference(
                     document,
                     evidence_by_path,
                     action=FileAction.MODIFY,
-                    reason="Observed test path provides the closest regression-test home.",
+                    reason="Strongest issue-supported regression-test home.",
                 )
-                for document in test_documents[:2]
             ]
         anchor = config_documents[0] if config_documents else fallback_document
         issue_slug = _NON_IDENTIFIER.sub("_", snapshot.repository.name.lower()).strip("_")

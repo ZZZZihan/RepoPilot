@@ -95,7 +95,10 @@ class GitHubRepositoryInspector:
                 params={"recursive": "1"},
                 max_bytes=self._limits.max_response_bytes,
             )
-            if tree.get("truncated") is True:
+            truncated = tree.get("truncated")
+            if not isinstance(truncated, bool):
+                raise RepositoryUpstreamError("GitHub returned a malformed tree truncation flag")
+            if truncated:
                 raise InspectionLimitExceededError(
                     "GitHub truncated the recursive tree; this slice supports only "
                     "small repositories"

@@ -36,7 +36,8 @@ class SQLitePlanStore:
 
     def initialize(self) -> None:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        existed = self._database_path.exists()
+        if self._database_path.is_file():
+            os.chmod(self._database_path, 0o600)
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
@@ -52,7 +53,7 @@ class SQLitePlanStore:
                 )
                 """
             )
-        if not existed and self._database_path.exists():
+        if self._database_path.is_file():
             os.chmod(self._database_path, 0o600)
 
     def create(self, plan: ImplementationPlan) -> None:

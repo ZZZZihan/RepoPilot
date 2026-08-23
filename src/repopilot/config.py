@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from repopilot.inspection import InspectionLimits
+from repopilot.models import MAX_PLAN_EVIDENCE_ITEMS
 
 _API_VERSION_PATTERN = re.compile(r"^20[0-9]{2}-[01][0-9]-[0-3][0-9]$")
 
@@ -44,7 +45,10 @@ class Settings:
                 "REPOPILOT_MAX_TREE_ENTRIES", 2_000, minimum=1, maximum=100_000
             ),
             max_selected_files=_environment_int(
-                "REPOPILOT_MAX_SELECTED_FILES", 32, minimum=1, maximum=256
+                "REPOPILOT_MAX_SELECTED_FILES",
+                32,
+                minimum=1,
+                maximum=MAX_PLAN_EVIDENCE_ITEMS,
             ),
             max_file_bytes=_environment_int(
                 "REPOPILOT_MAX_FILE_BYTES", 64 * 1024, minimum=1_024, maximum=1024 * 1024

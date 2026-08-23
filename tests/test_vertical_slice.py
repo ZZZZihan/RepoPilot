@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from repopilot.adapters.filesystem import FixedRootRepositoryInspector
 from repopilot.api import create_app
 from repopilot.config import Settings
+from repopilot.inspection import InspectionLimits
 from repopilot.models import ImplementationPlan
 
 CREATE_REQUEST = {
@@ -42,6 +43,28 @@ def test_golden_issue_describes_an_unsatisfied_observable_delta(
     assert "test_divide_by_zero" not in fixture_tests
     assert "ZeroDivisionError" in readme
     assert 'ValueError("divisor must not be zero")' in CREATE_REQUEST["issue"]["body"]
+
+
+def test_uninspected_source_and_test_return_stable_limit_error(
+    settings: Settings,
+    fixture_repository_root: Path,
+) -> None:
+    limited_inspector = FixedRootRepositoryInspector(
+        root=fixture_repository_root,
+        owner="acme",
+        name="tiny-python",
+        limits=InspectionLimits(max_selected_files=1),
+    )
+    app = create_app(settings=settings, inspector=limited_inspector)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/plans", json=CREATE_REQUEST)
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "inspection_limit_exceeded"
+    assert (
+        "increase inspection limits or narrow the repository" in response.json()["error"]["message"]
+    )
 
 
 def test_create_persist_validate_and_approve_plan_end_to_end(

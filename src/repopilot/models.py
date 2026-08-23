@@ -16,6 +16,7 @@ _SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _TREE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40,64}$")
 _EVIDENCE_ID_PATTERN = re.compile(r"^E[1-9][0-9]*$")
+MAX_PLAN_EVIDENCE_ITEMS = 64
 
 
 class StrictModel(BaseModel):
@@ -318,7 +319,10 @@ class ImplementationPlan(StrictModel):
     issue: IssueInput
     summary: str = Field(min_length=1, max_length=1_500)
     inspection: InspectionSummary
-    evidence: list[EvidenceItem] = Field(min_length=1, max_length=64)
+    evidence: list[EvidenceItem] = Field(
+        min_length=1,
+        max_length=MAX_PLAN_EVIDENCE_ITEMS,
+    )
     steps: list[PlanStep] = Field(min_length=1, max_length=20)
     verification_intents: list[VerificationIntent] = Field(max_length=8)
     assumptions: list[str] = Field(max_length=20)

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
+import pytest
+
+from repopilot.errors import InspectionLimitExceededError
 from repopilot.inspection import (
     InspectedDocument,
     InspectionLimits,
@@ -9,6 +13,7 @@ from repopilot.inspection import (
 )
 from repopilot.models import (
     EvidenceCategory,
+    FileAction,
     ImplementationPlan,
     InspectedRepository,
     IssueInput,
@@ -211,3 +216,121 @@ def test_issue_mutation_changes_the_selected_source_and_test() -> None:
     assert _paths_for(add_steps[StepKind.IMPLEMENTATION]) == ["src/arithmetic/adder.py"]
     assert _paths_for(divide_steps[StepKind.TEST]) == ["tests/test_calculator.py"]
     assert _paths_for(add_steps[StepKind.TEST]) == ["tests/test_adder.py"]
+
+
+def test_symbol_definition_outweighs_comment_keyword_stuffing_without_a_file_hint() -> None:
+    snapshot = _semantic_snapshot()
+    issue = IssueInput(
+        number=19,
+        title="Handle zero divisors in divide()",
+        body=(
+            "Raise ValueError when the divisor is zero, preserve the quotient, and add focused "
+            "regression coverage."
+        ),
+    )
+
+    plan = PlanBuilder().build(snapshot, issue)
+    steps = {step.kind: step for step in plan.steps}
+    ranked_sources = PlanBuilder._rank_documents(
+        snapshot.documents,
+        f"{issue.title}\n{issue.body}".casefold(),
+        EvidenceCategory.SOURCE,
+    )
+
+    assert "calculator.py" not in f"{issue.title}\n{issue.body}"
+    assert [document.path for document in ranked_sources[:2]] == [
+        "src/arithmetic/calculator.py",
+        "src/arithmetic/noisy.py",
+    ]
+    assert _paths_for(steps[StepKind.IMPLEMENTATION]) == ["src/arithmetic/calculator.py"]
+    assert _paths_for(steps[StepKind.TEST]) == ["tests/test_calculator.py"]
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("Improve this", "Make it better."),
+        ("改进这个功能", "让它更可靠。"),
+    ],
+)
+def test_low_signal_issue_falls_back_to_observed_files_with_explicit_risk(
+    title: str, body: str
+) -> None:
+    plan = PlanBuilder().build(
+        _semantic_snapshot(),
+        IssueInput(number=20, title=title, body=body),
+    )
+    steps = {step.kind: step for step in plan.steps}
+    implementation_reference = steps[StepKind.IMPLEMENTATION].file_references[0]
+    test_reference = steps[StepKind.TEST].file_references[0]
+
+    assert implementation_reference.path == "src/arithmetic/adder.py"
+    assert implementation_reference.action is FileAction.MODIFY
+    assert implementation_reference.exists is True
+    assert "Low-confidence deterministic fallback" in implementation_reference.reason
+    assert test_reference.path == "tests/test_adder.py"
+    assert test_reference.action is FileAction.MODIFY
+    assert test_reference.exists is True
+    assert "Low-confidence deterministic fallback" in test_reference.reason
+    assert any(
+        "Low-confidence source selection" in risk and "src/arithmetic/adder.py" in risk
+        for risk in plan.risks
+    )
+    assert any(
+        "Low-confidence test selection" in risk and "tests/test_adder.py" in risk
+        for risk in plan.risks
+    )
+
+
+def test_inferred_paths_are_only_used_when_source_and_test_categories_are_absent() -> None:
+    snapshot = _semantic_snapshot()
+    documents = tuple(
+        document
+        for document in snapshot.documents
+        if document.category not in {EvidenceCategory.SOURCE, EvidenceCategory.TEST}
+    )
+    snapshot_without_code = replace(
+        snapshot,
+        documents=documents,
+        all_paths=tuple(document.path for document in documents),
+    )
+
+    plan = PlanBuilder().build(
+        snapshot_without_code,
+        IssueInput(number=21, title="Improve this", body="Make it better."),
+    )
+    steps = {step.kind: step for step in plan.steps}
+    implementation_reference = steps[StepKind.IMPLEMENTATION].file_references[0]
+    test_reference = steps[StepKind.TEST].file_references[0]
+
+    assert implementation_reference.path == "src/arithmetic/feature.py"
+    assert implementation_reference.action is FileAction.CREATE
+    assert implementation_reference.exists is False
+    assert "No Python source file was observed" in implementation_reference.reason
+    assert test_reference.path == "tests/test_arithmetic.py"
+    assert test_reference.action is FileAction.CREATE
+    assert test_reference.exists is False
+    assert "No test file was observed" in test_reference.reason
+    assert not any("Low-confidence" in risk for risk in plan.risks)
+
+
+def test_uninspected_tree_source_and_test_fail_closed_instead_of_creating_paths() -> None:
+    snapshot = _semantic_snapshot()
+    readme = next(
+        document for document in snapshot.documents if document.category is EvidenceCategory.README
+    )
+    limited_snapshot = replace(
+        snapshot,
+        documents=(readme,),
+        selection_truncated=True,
+        limits=replace(snapshot.limits, max_selected_files=1),
+    )
+
+    with pytest.raises(
+        InspectionLimitExceededError,
+        match="increase inspection limits or narrow the repository",
+    ):
+        PlanBuilder().build(
+            limited_snapshot,
+            IssueInput(number=22, title="Improve this", body="Make it better."),
+        )

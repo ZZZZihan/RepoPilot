@@ -293,6 +293,29 @@ def test_github_adapter_rejects_truncated_tree() -> None:
         _inspect(_github_transport(tree=tree))
 
 
+@pytest.mark.parametrize(
+    ("field_present", "value"),
+    [
+        (False, None),
+        (True, None),
+        (True, "false"),
+        (True, 0),
+        (True, 1),
+        (True, []),
+    ],
+)
+def test_github_adapter_fails_closed_on_malformed_tree_truncation_flag(
+    field_present: bool, value: object
+) -> None:
+    payload: dict[str, object] = {"sha": _TREE_SHA, "tree": []}
+    if field_present:
+        payload["truncated"] = value
+    tree = httpx.Response(200, json=payload)
+
+    with pytest.raises(RepositoryUpstreamError, match="malformed tree truncation flag"):
+        _inspect(_github_transport(tree=tree))
+
+
 def test_github_adapter_stops_at_tree_entry_bound() -> None:
     entries = [
         _tree_entry(f"src/module_{index}.py", b"x", sha=f"{index + 1:040x}") for index in range(3)

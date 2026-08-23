@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -43,7 +44,7 @@ HOST = "127.0.0.1"
 STARTUP_TIMEOUT_SECONDS = 10.0
 SHUTDOWN_TIMEOUT_SECONDS = 10.0
 HTTP_TIMEOUT_SECONDS = 5.0
-EXPECTED_UVICORN_EXIT_CODES = {0, -signal.SIGTERM}
+EXPECTED_UVICORN_EXIT_CODES = {0}
 GITHUB_TOKEN_ENVIRONMENT_VARIABLES = (
     "REPOPILOT_GITHUB_TOKEN",
     "GITHUB_TOKEN",
@@ -196,12 +197,16 @@ class UvicornChild:
         self._script_path = script_path
         self._database_path = database_path
         self._fixture_root = fixture_root
+        self._shutdown_write_fd: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.port: int | None = None
-        self.forced_shutdown = False
+        self.signal_fallback_used = False
+        self.kill_fallback_used = False
 
     def start(self) -> None:
-        read_fd, write_fd = os.pipe()
+        ready_read_fd, ready_write_fd = os.pipe()
+        shutdown_read_fd, shutdown_write_fd = os.pipe()
+        self._shutdown_write_fd = shutdown_write_fd
         child_environment = os.environ.copy()
         for variable_name in GITHUB_TOKEN_ENVIRONMENT_VARIABLES:
             child_environment.pop(variable_name, None)
@@ -214,26 +219,33 @@ class UvicornChild:
             "--fixture-root",
             str(self._fixture_root),
             "--ready-fd",
-            str(write_fd),
+            str(ready_write_fd),
+            "--shutdown-fd",
+            str(shutdown_read_fd),
         ]
         try:
             self.process = subprocess.Popen(
                 command,
                 env=child_environment,
-                pass_fds=(write_fd,),
+                pass_fds=(ready_write_fd, shutdown_read_fd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+        except Exception:
+            os.close(shutdown_write_fd)
+            self._shutdown_write_fd = None
+            raise
         finally:
-            os.close(write_fd)
+            os.close(ready_write_fd)
+            os.close(shutdown_read_fd)
 
         selector = selectors.DefaultSelector()
-        selector.register(read_fd, selectors.EVENT_READ)
+        selector.register(ready_read_fd, selectors.EVENT_READ)
         try:
             events = selector.select(STARTUP_TIMEOUT_SECONDS)
             if not events:
                 raise SmokeFailure("Uvicorn child did not allocate a port")
-            ready_payload = os.read(read_fd, 64).decode("ascii").strip()
+            ready_payload = os.read(ready_read_fd, 64).decode("ascii").strip()
             if not ready_payload:
                 raise SmokeFailure("Uvicorn child exited before allocating a port")
             self.port = int(ready_payload)
@@ -241,7 +253,7 @@ class UvicornChild:
             raise SmokeFailure("Uvicorn child returned an invalid port signal") from exc
         finally:
             selector.close()
-            os.close(read_fd)
+            os.close(ready_read_fd)
 
         if not 0 < self.port < 65_536:
             raise SmokeFailure("Uvicorn child allocated an invalid port")
@@ -262,20 +274,47 @@ class UvicornChild:
                 "process_stopped": True,
                 "port_closed": True,
                 "exit_code": None,
-                "forced": False,
+                "control_pipe_requested": False,
+                "signal_fallback": False,
+                "kill_fallback": False,
+                "graceful": False,
             }
 
+        control_pipe_requested = False
         if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
+            if self._shutdown_write_fd is not None:
+                try:
+                    os.write(self._shutdown_write_fd, b"shutdown\n")
+                    control_pipe_requested = True
+                except OSError:
+                    self.signal_fallback_used = True
+                finally:
+                    os.close(self._shutdown_write_fd)
+                    self._shutdown_write_fd = None
             try:
                 process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
-                self.forced_shutdown = True
-                process.kill()
-                process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+                self.signal_fallback_used = True
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    self.kill_fallback_used = True
+                    process.kill()
+                    process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+
+        if self._shutdown_write_fd is not None:
+            os.close(self._shutdown_write_fd)
+            self._shutdown_write_fd = None
 
         process_stopped = process.poll() is not None
         port_closed = port is None or wait_for_closed_port(port)
+        graceful = (
+            control_pipe_requested
+            and process.returncode == 0
+            and not self.signal_fallback_used
+            and not self.kill_fallback_used
+        )
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
@@ -284,11 +323,28 @@ class UvicornChild:
             "process_stopped": process_stopped,
             "port_closed": port_closed,
             "exit_code": process.returncode,
-            "forced": self.forced_shutdown,
+            "control_pipe_requested": control_pipe_requested,
+            "signal_fallback": self.signal_fallback_used,
+            "kill_fallback": self.kill_fallback_used,
+            "graceful": graceful,
         }
 
 
-def run_server(*, database_path: Path, fixture_root: Path, ready_fd: int) -> int:
+def request_server_shutdown(server: uvicorn.Server, shutdown_fd: int) -> None:
+    try:
+        os.read(shutdown_fd, 64)
+    finally:
+        os.close(shutdown_fd)
+    server.should_exit = True
+
+
+def run_server(
+    *,
+    database_path: Path,
+    fixture_root: Path,
+    ready_fd: int,
+    shutdown_fd: int,
+) -> int:
     if any(name in os.environ for name in GITHUB_TOKEN_ENVIRONMENT_VARIABLES):
         return 70
 
@@ -324,7 +380,15 @@ def run_server(*, database_path: Path, fixture_root: Path, ready_fd: int) -> int
         lifespan="on",
     )
     server = uvicorn.Server(config)
+    shutdown_thread = threading.Thread(
+        target=request_server_shutdown,
+        args=(server, shutdown_fd),
+        daemon=True,
+        name="repopilot-smoke-shutdown",
+    )
+    shutdown_thread.start()
     server.run(sockets=[listener])
+    shutdown_thread.join(timeout=1.0)
     return 0 if server.started else 71
 
 
@@ -386,10 +450,24 @@ def base_capsule(repository_root: Path, script_path: Path) -> dict[str, Any]:
             "live_github_performed": False,
             "child_launch": "argv",
             "subprocess_shell": False,
-            "shutdown_signal": "SIGTERM",
+            "shutdown_method": "control_pipe",
+            "shutdown_signal_fallback": "SIGTERM",
             "expected_child_exit_codes": sorted(EXPECTED_UVICORN_EXIT_CODES),
         },
     }
+
+
+def record_final_worktree_state(capsule: dict[str, Any], repository_root: Path) -> None:
+    source = capsule.get("source")
+    if not isinstance(source, dict):
+        return
+
+    worktree_clean_after = git_is_clean(repository_root)
+    source["worktree_clean_after"] = worktree_clean_after
+    source["worktree_unchanged"] = source.get("worktree_clean") is True and worktree_clean_after
+    if capsule.get("status") == "PASS" and source["worktree_unchanged"] is not True:
+        capsule["status"] = "FAIL"
+        capsule["failure"] = {"stage": "repository_cleanup", "type": "DirtyWorktreeError"}
 
 
 def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
@@ -506,7 +584,9 @@ def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
                     cleanup[-1]["process_stopped"],
                     cleanup[-1]["port_closed"],
                     cleanup[-1]["exit_code"] in EXPECTED_UVICORN_EXIT_CODES,
-                    not cleanup[-1]["forced"],
+                    cleanup[-1]["graceful"],
+                    not cleanup[-1]["signal_fallback"],
+                    not cleanup[-1]["kill_fallback"],
                 )
             ):
                 raise SmokeFailure("first Uvicorn process did not cleanly stop")
@@ -543,7 +623,9 @@ def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
                     cleanup[-1]["process_stopped"],
                     cleanup[-1]["port_closed"],
                     cleanup[-1]["exit_code"] in EXPECTED_UVICORN_EXIT_CODES,
-                    not cleanup[-1]["forced"],
+                    cleanup[-1]["graceful"],
+                    not cleanup[-1]["signal_fallback"],
+                    not cleanup[-1]["kill_fallback"],
                 )
             ):
                 raise SmokeFailure("second Uvicorn process did not cleanly stop")
@@ -585,9 +667,8 @@ def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
             capsule["status"] = "FAIL"
             capsule["failure"] = {"stage": stage, "type": type(exc).__name__}
         finally:
-            for child in children:
-                if child.process is not None and child.process.poll() is None:
-                    cleanup.append(child.stop())
+            for child in children[len(cleanup) :]:
+                cleanup.append(child.stop())
 
             started_cleanup = [item for item in cleanup if item["started"]]
             capsule["cleanup"] = {
@@ -599,7 +680,18 @@ def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
                     bool(item["process_stopped"]) for item in started_cleanup
                 ),
                 "all_ports_closed": all(bool(item["port_closed"]) for item in started_cleanup),
-                "forced_shutdowns": sum(bool(item["forced"]) for item in started_cleanup),
+                "control_pipe_shutdowns": sum(
+                    bool(item["control_pipe_requested"]) for item in started_cleanup
+                ),
+                "graceful_shutdowns": sum(bool(item["graceful"]) for item in started_cleanup),
+                "all_shutdowns_graceful": len(started_cleanup) == 2
+                and all(bool(item["graceful"]) for item in started_cleanup),
+                "signal_fallbacks": sum(bool(item["signal_fallback"]) for item in started_cleanup),
+                "kill_fallbacks": sum(bool(item["kill_fallback"]) for item in started_cleanup),
+                "fallbacks_used": any(
+                    bool(item["signal_fallback"]) or bool(item["kill_fallback"])
+                    for item in started_cleanup
+                ),
                 "child_exit_codes": [item["exit_code"] for item in started_cleanup],
                 "all_exit_codes_expected": all(
                     item["exit_code"] in EXPECTED_UVICORN_EXIT_CODES for item in started_cleanup
@@ -640,6 +732,7 @@ def run_smoke(repository_root: Path, script_path: Path) -> dict[str, Any]:
         capsule["status"] = "FAIL"
         capsule["failure"] = {"stage": "temporary_cleanup", "type": "SmokeFailure"}
 
+    record_final_worktree_state(capsule, repository_root)
     return capsule
 
 
@@ -649,6 +742,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--database", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--fixture-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--ready-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--shutdown-fd", type=int, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -659,12 +753,14 @@ def main() -> int:
             arguments.database is None
             or arguments.fixture_root is None
             or arguments.ready_fd is None
+            or arguments.shutdown_fd is None
         ):
             return 64
         return run_server(
             database_path=arguments.database,
             fixture_root=arguments.fixture_root,
             ready_fd=arguments.ready_fd,
+            shutdown_fd=arguments.shutdown_fd,
         )
 
     for variable_name in GITHUB_TOKEN_ENVIRONMENT_VARIABLES:

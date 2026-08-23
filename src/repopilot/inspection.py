@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 from typing import Protocol
 
 from repopilot.models import (
+    MAX_PLAN_EVIDENCE_ITEMS,
     EvidenceCategory,
     GitHubRepositoryInput,
     InspectedRepository,
@@ -36,6 +37,11 @@ class InspectionLimits:
         )
         if any(value <= 0 for value in numeric_values):
             raise ValueError("all inspection limits must be positive")
+        if self.max_selected_files > MAX_PLAN_EVIDENCE_ITEMS:
+            raise ValueError(
+                "max_selected_files cannot exceed "
+                f"{MAX_PLAN_EVIDENCE_ITEMS}, the implementation-plan evidence limit"
+            )
         if self.max_selected_files > self.max_tree_entries:
             raise ValueError("max_selected_files cannot exceed max_tree_entries")
         if self.max_file_bytes > self.max_total_bytes:

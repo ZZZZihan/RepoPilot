@@ -99,7 +99,12 @@ def create_app(
         tags=["schemas"],
     )
     async def implementation_plan_schema() -> dict[str, Any]:
-        """Expose the same JSON Schema enforced at construction, persistence, and reads."""
+        """Expose the structural schema and its runtime semantic-constraint manifest.
+
+        Pydantic enforces the structural JSON Schema together with the custom graph and state
+        validators identified by ``x-repopilot-semantic-constraints`` during construction,
+        persistence, and reads.
+        """
 
         return ImplementationPlan.model_json_schema(mode="validation")
 

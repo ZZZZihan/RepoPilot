@@ -1,8 +1,8 @@
 # RepoPilot development workflow
 
-Status: executing M0; integrated local candidate is green, hosted CI is pending
+Status: M0 delivery contract; live release state is tracked in GitHub and Linear
 
-Last reviewed: 2026-08-24
+Last reviewed: 2026-08-27
 
 ## 1. Outcome
 
@@ -22,53 +22,53 @@ RepoPilot 的首要目标不是立即建设完整平台，而是用可证伪的�
 M2 得出 Go 结论以前，不建设完整 Web 控制台、GitHub 写入闭环、多用户
 数据库、生产监控或公开部署。
 
-## 2. Current evidence
+## 2. Evidence model and historical checkpoints
 
-### Confirmed
+### Durable repository evidence
 
-- 当前 main 与 origin/main 指向初始化提交
-  a3469d43430f8d276174dc25969102aeb33a328b。
-- main 和 origin/main 未在恢复过程中被覆盖；主工作区只包含尚未提交的规划
-  文档变更。
-- 37 文件的 Planning Slice 已由本地分支 `codex/recovered-planning-slice` 和恢复
-  提交 e54d5ba4b2ccdca8a4562588476d009d88ced763 保护；后续硬化提交仍不是 main
-  的一部分，也尚未推送。
-- 恢复提交的干净检出已用 CPython 3.12.12、uv 0.10.0 完成锁定安装和
+- 恢复基线 e54d5ba4b2ccdca8a4562588476d009d88ced763 保存了 37 文件的 Planning
+  Slice；这是来源 checkpoint，不代表实时分支或发布状态。
+- 该恢复 checkpoint 的干净检出曾用 CPython 3.12.12、uv 0.10.0 完成锁定安装和
   `make check`：Ruff、严格 MyPy 以及 6/6 Pytest 全部通过。
-- M0-02 已确认 `httpx2` 是 Starlette 1.6 `TestClient` 的直接测试后端，不应
+- 历史 M0-02 checkpoint 已确认 `httpx2` 是 Starlette 1.6 `TestClient` 的直接测试后端，不应
   删除；依赖来源已迁移为仓库内显式的官方 PyPI 配置，未使用的
   `pytest-cov`/`coverage` 已删除，GitHub adapter 负向路径已经补齐。精确提交
-  26942c7 在全新 worktree 完成官方源、无缓存冷安装、34/34 测试和构建。
+  `26942c776a8eceeb0e757f56946ce5f3e87787cf` 在全新 worktree 完成官方源、无缓存冷安装、
+  34/34 测试和构建。
 - 独立语义审计发现原 golden Issue 已被夹具预先满足。COL-9 已把目标改为
   尚未满足且可观察的 `ValueError` 契约，收紧文件排序与 evidence window，
   并加入噪声文件和变异 Issue 测试。
-- 集成候选在精确提交 61641fe 上通过 Ruff、严格 MyPy、37/37 Pytest，以及
-  两个真实 Uvicorn 子进程的创建、审批、冲突、重启读取和 SQLite 清理 smoke；
-  文档合入后的最终提交仍需再做一次冷验收。
-- Linear 连接已授权；项目
+- 集成候选在精确提交 `61641fe43036d7dcde4b945f4d692fd4e4e1dbc8` 上通过 Ruff、严格
+  MyPy、37/37 Pytest，以及两个真实 Uvicorn 子进程的创建、审批、冲突、重启读取和
+  SQLite 清理 smoke；
+  该 checkpoint 不替代任何后续 HEAD 的发布证据。
+- Linear 项目
   [RepoPilot — Verified Issue-to-PR Pilot](https://linear.app/colife/project/repopilot-verified-issue-to-pr-pilot-bf73022b2c42)
-  及四个里程碑已创建。COL-5、COL-6 已完成；COL-9 与 COL-7 负责语义和
-  真实进程验收；COL-8 等待最终分支、PR 和托管 CI。
-- Exa、Supabase、Neon Postgres 和 Vercel 的连接可读。
-- Supabase 账号已有一个健康项目，但尚未选择给 RepoPilot 使用。
-- Neon Postgres 账号可读，但目前没有项目。
-- Vercel 账号可读，但目前没有项目。
-- Datadog 工具存在，但连接器当前未授权。
-- Devpost 当前没有 RepoPilot 本地流程状态；没有查询、注册或提交任何比赛。
+  保存实时目标、里程碑、工单状态与依赖；GitHub 保存实时分支、SHA、PR、review
+  与 Actions run。仓库文档只保存契约和明确标注的历史 checkpoint。
+- 每个发布候选的精确 HEAD、本地 cold gate、two-stage snapshot smoke、security diff、
+  hosted run 与 review 证据必须存入 PR 和关联的 Linear Evidence Capsule；缺少这些
+  外部记录即不能视为已验收。
+- 本次 M0 恢复的声明安全审查/PR 基线是完整提交
+  `a3469d43430f8d276174dc25969102aeb33a328b`；最终外部证据必须同时记录该
+  `security_base_sha` 与候选的完整 `candidate_head_sha`，覆盖二者之间的整个差异。
+- 外部工具的账号、连接器和项目清单在相关阶段实时检查，不在仓库文档中复制为
+  持续有效的状态。
 
 ### Inference
 
-- 已有证据支持继续硬化恢复候选，而不是从零重写；发布前仍必须完成最终
-  冷态复验、PR 安全审查和远端 CI。
+- 历史证据支持沿用并持续硬化该基线，而不是从零重写；每个发布候选仍须完成
+  自身的 cold gate、PR 安全审查和 hosted CI。
 - RepoPilot 在 M0 至 M2 不需要托管 Postgres；SQLite 和版本化运行工件足以
   验证核心产品假设。
 - Vercel Sandbox 与 RepoPilot 的不可信代码执行场景高度匹配，但在通过
   威胁模型、网络、凭据、资源限制和清理验收前，只能视作 M1a 候选。
 
-### Unknown
+### Candidate-specific evidence and future decisions
 
-- 文档合入后最终提交在全新无缓存 worktree 中的综合复验结果。
-- 候选 Slice 的远端 GitHub Actions 结果。
+- 任一发布候选只有在 PR 与 Linear Evidence Capsule 记录其精确 HEAD 的全新无缓存
+  cold gate、two-stage snapshot smoke、security diff、hosted GitHub Actions run 和 review
+  后，才满足发布证据契约。
 - Vercel Sandbox 是否满足 RepoPilot 最终的默认断网、命令策略、Python
   版本、资源限制和工件取回要求。
 - M2 后应选择 Neon Postgres 还是 Supabase；该决定取决于是否需要
@@ -129,9 +129,53 @@ clean GitHub baseline?
 - uv: locked Python 3.12 environment.
 - Ruff, strict MyPy and Pytest: automated quality layers.
 - make check: one local CI contract.
-- Uvicorn and an HTTP client: real-process create/read/approve/restart/read smoke.
+- Git archive and a versioned manifest: materialize and independently verify the exact clean
+  source commit/tree used by the acceptance harness.
+- Uvicorn and an HTTP client: two snapshot-only processes for
+  create/read/approve/restart/read smoke.
 - security-diff-scan: baseline PR security review.
 - GitHub Actions and gh: remote CI and PR evidence.
+
+### Candidate cold-install and build contract
+
+日常 `make sync` 只服务开发循环。M0 候选的全新本地环境和 hosted `ci`/`check` job 必须
+使用同一顺序（output directory 可以是各自的新临时目录）：
+
+~~~bash
+uv sync \
+  --locked \
+  --all-groups \
+  --no-install-project \
+  --no-cache \
+  --no-config \
+  --no-editable \
+  --no-sources \
+  --default-index https://pypi.org/simple
+uv sync \
+  --locked \
+  --all-groups \
+  --no-build-isolation \
+  --no-cache \
+  --no-config \
+  --no-editable \
+  --no-sources \
+  --default-index https://pypi.org/simple
+UV_NO_SYNC=1 make check
+UV_NO_SYNC=1 make smoke-m0
+uv build \
+  --no-build-isolation \
+  --no-sources \
+  --no-cache \
+  --no-config \
+  --python 3.12.12 \
+  --default-index https://pypi.org/simple \
+  --out-dir <fresh-temporary-directory>
+~~~
+
+第一阶段不安装 RepoPilot 本身，但通过 `--all-groups` 从 `uv.lock` 安装固定的
+`hatchling` 及其依赖；第二阶段以 `--no-build-isolation` 使用这个锁定 backend 安装
+项目。分发包继续复用同一环境，因此不会由临时隔离 build environment 再独立解析
+backend。`UV_NO_SYNC=1` 保证质量与 smoke gate 不在执行时隐式改变该安装。
 
 ### Exit criteria
 
@@ -140,11 +184,29 @@ clean GitHub baseline?
 - Dependency provenance and secrets are reviewed.
 - A clean checkout can install from the lockfile.
 - make check passes and records the test count and tool versions.
-- A real Uvicorn process completes the documented persistence smoke.
+- A two-stage Git-archive snapshot smoke binds two real Uvicorn processes, the manifest and
+  SQLite persistence evidence to the exact clean commit/tree.
+- Its exact managed boundary is
+  `managed_direct_children_original_posix_process_group_and_observed_ports`; it covers managed
+  direct children, members that remain in the snapshot orchestrator's original POSIX process
+  group and observed ports, but not a descendant that deliberately escapes with `setsid()`.
+- Git/archive/member/file/total/output/read/time caps, the exact minimal child/Git environments
+  and the SQLite lstat/no-follow/inode/sidecar checks match
+  [Current architecture](architecture.md) and [acceptance](product/acceptance.md).
+- POSIX SQLite lstat/no-follow/owner/type/link/mode/inode/sidecar and WAL gates pass within the
+  documented same-UID/ACL/non-POSIX threat boundary.
 - The documentation distinguishes local, live-GitHub and hosted-CI evidence.
 - The branch is pushed through a human-reviewable PR.
 - GitHub Actions is observed green.
-- The final worktree is clean and both the recovery SHA and final commit SHA are recorded.
+- The final worktree is clean; the recovery SHA and final commit SHA are recorded in the PR and
+  linked Linear Evidence Capsule rather than self-recorded in the candidate tree.
+
+M0 approval and `verification_readiness` remain planning signals only.
+`verification_readiness="ready"` requires an evidence-backed pytest intent;
+`needs_human_input` remains a valid non-ready planning result, all verification intents remain
+unexecuted, and
+`ImplementationPlan` 1.0 cannot cross the future execution/publication seam. M1a must introduce
+the distinct execution-sealed type and ADR before any execution adapter can exist.
 
 ### Out of scope
 
@@ -334,7 +396,8 @@ fields remain vendor-neutral; Datadog receives selected operational spans for:
 - dashboards and alerts.
 
 Raw repository contents, source patches, secrets and full prompts are not exported by
-default. Datadog is currently disconnected and is not a delivery blocker.
+default. Datadog is outside the M0 delivery gate; its connector and authorization state are
+verified live only when a deployed observability stage begins.
 
 ### Devpost
 
@@ -391,11 +454,14 @@ parallel independent reading
 Agents do not concurrently edit the same files. External writes, deployments, database
 creation and submissions require the relevant stage and explicit authority.
 
-## 11. Current next action
+## 11. Publication handoff contract
 
-Complete one cold verification on the final documentation-integrated commit, then push the
-recovery branch, open the reviewable baseline PR, observe hosted GitHub Actions, and link the
-exact PR/check evidence back to COL-8. Do not merge automatically.
+For each candidate head, complete the exact two-stage cold local gate above, two-stage snapshot
+smoke and security diff, publish it through a reviewable PR, and observe hosted GitHub Actions
+after it explicitly checks out the PR head SHA, verifies actual `HEAD` equals the event SHA,
+records `HEAD^{tree}` and confirms a clean worktree. Link that exact SHA/tree/run/review evidence
+to the owning Linear issue or Evidence Capsule. Do not merge automatically, and do not encode
+this live state as repository prose.
 
 ## 12. Current primary-source references
 

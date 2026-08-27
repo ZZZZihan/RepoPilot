@@ -1,5 +1,12 @@
 # 推荐项目：RepoPilot——从 GitHub Issue 到可验证 PR 的研发 Agent
 
+> Status: long-term vision and early proposal; this is not the authoritative current
+> delivery sequence. The canonical staged scope and gates live in
+> [RepoPilot development workflow](development-workflow.md). In particular, current M0 is
+> planning/approval only; an approved `ImplementationPlan` 1.0 with
+> `verification_readiness="ready"` is not execution authority,
+> and Patch production or repository execution begins no earlier than an ADR-governed M1a seal.
+
 我建议你下一个个人项目不要做通用聊天助手，也不要再做“上传 PDF 问答”，而是做一个：
 
 > **面向 GitHub 仓库的研发任务 Agent：读取 Issue，分析代码库，制定修改计划，在沙箱中修改代码并执行测试，最终经人工确认后创建 Pull Request。**

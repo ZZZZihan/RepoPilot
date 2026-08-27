@@ -14,6 +14,9 @@ dependencies = [
 [dependency-groups]
 dev = [
   # Starlette 1.6 selects httpx2 as the FastAPI TestClient backend.
+  # Keep the build backend and its transitive requirements inside uv.lock so
+  # candidate distributions can be built without an independently resolved environment.
+  "hatchling==1.32.0",
   "httpx2>=2.10,<3.0",
   "mypy>=1.15,<2.0",
   "pytest>=8.3,<10.0",

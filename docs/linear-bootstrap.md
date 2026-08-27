@@ -1,8 +1,8 @@
 # Linear bootstrap for RepoPilot
 
-Status: synced to Linear on 2026-08-24; this file remains the reviewable bootstrap record
+Status: bootstrap synced to Linear on 2026-08-24; live state remains in Linear
 
-## Live sync record
+## Bootstrap sync record — historical snapshot
 
 - Project: [RepoPilot — Verified Issue-to-PR Pilot](https://linear.app/colife/project/repopilot-verified-issue-to-pr-pilot-bf73022b2c42)
 - Team: CoLife (`COL`)
@@ -15,10 +15,10 @@ Status: synced to Linear on 2026-08-24; this file remains the reviewable bootstr
 - [COL-7](https://linear.app/colife/issue/COL-7/m0-03-seal-reproducible-http-and-persistence-acceptance): Todo, blocked by COL-6 and COL-9
 - [COL-8](https://linear.app/colife/issue/COL-8/m0-04-publish-planning-baseline-01-with-hosted-ci-evidence): Todo, blocked by COL-7
 
-Linear is authoritative for live status and dependencies. The graph and issue templates below
-are historical bootstrap snapshots retained for version review. Their state/dependency fields
-and unchecked acceptance boxes are not live; use the Live sync record above and Linear itself
-for current status, relations and completion evidence.
+This section records the state immediately after bootstrap and is not a live status mirror.
+Linear is authoritative for current status, dependencies and completion evidence. The graph and
+issue templates below are also historical bootstrap snapshots retained for version review; their
+state/dependency fields and unchecked acceptance boxes are not live.
 
 ## Project
 
@@ -75,9 +75,10 @@ read. Do not duplicate GitHub CI status in a Linear field; link the check or PR.
 
 ### M0 Planning Baseline Sealed
 
-Recover, inspect and publish a reproducible planning-and-approval slice. Exit only with a
-clean checkpoint, current local checks, real-process persistence smoke and hosted CI
-evidence.
+Recover, inspect and publish a reproducible planning-and-approval slice. Exit only with one
+clean exact commit/tree, a cold local gate, a two-stage snapshot real-process persistence smoke,
+a security diff review and hosted CI observed green on that same commit. Publish a reviewable
+PR; do not merge automatically.
 
 ### M1a Execution Contract Proven
 
@@ -98,10 +99,9 @@ threshold.
 ## Historical bootstrap dependency graph — not live
 
 ~~~text
-M0-01 Recover candidate baseline
-  -> M0-02 Harden contracts and dependency provenance --+
-  -> M0-02b Seal Issue-aware semantic baseline ----------+-> M0-03 Reproduce HTTP and persistence acceptance
-        -> M0-04 Publish baseline PR and hosted CI evidence
+M0-01 Recover candidate baseline -> M0-02 Harden contracts and dependency provenance --+
+M0-02b Seal Issue-aware semantic baseline --------------------------------------------+-> M0-03 Reproduce HTTP and persistence acceptance
+                                                                                           -> M0-04 Publish baseline PR and hosted CI evidence
 ~~~
 
 ## M0-01 — Preserve and reconstruct the audited Planning Slice
@@ -290,7 +290,7 @@ Category: enhancement
 
 Bootstrap state (historical; not live): ready-for-agent
 
-Bootstrap dependency (historical; not live) — blocked by: M0-02
+Bootstrap dependency (historical; not live) — blocked by: M0-02 and M0-02b
 
 Description:
 
@@ -310,10 +310,13 @@ Historical smoke evidence is not sufficient to certify the newly preserved Git b
 
 **Desired behavior:**
 
-A real Uvicorn process uses a temporary, permission-restricted SQLite database to create,
-read and approve a plan. After process restart the approved record and version remain
-readable. All runtime evidence is associated with the exact commit and repository
-snapshot used.
+The harness does not execute from a mutable live checkout. A bootstrap validates the actual
+repository top-level, captures a clean exact commit/tree and materializes a bounded source
+snapshot from that commit. An inner orchestrator independently re-materializes the claimed
+commit and matches the snapshot manifest before two real Uvicorn processes use a temporary,
+permission-restricted SQLite database to create, read and approve a plan. After process restart
+the approved record and version remain readable. Post-run manifest and live identity checks bind
+all runtime evidence to the exact commit and snapshot used.
 
 **Key interfaces:**
 
@@ -322,16 +325,42 @@ snapshot used.
   concurrency.
 - Persistent plan store — validated state must survive application reconstruction and
   process restart.
+- Source identity bootstrap — validate repository top-level, exact commit/tree and clean state.
+- Snapshot manifest — bind the bounded Git archive, manifest hash, file count, harness hash and
+  lockfile hash.
+- POSIX SQLite store — freeze the database path and enforce owner/type/link/mode, sidecar and
+  actual WAL contracts.
 
 **Bootstrap acceptance criteria (unchecked snapshot; not live):**
 
-- [ ] A real Uvicorn child process becomes healthy and exits cleanly.
+- [ ] The actual repository top-level, exact commit/tree and tracked/untracked clean state are
+  captured before materialization.
+- [ ] Unsafe archive members, an unrelated clean repository, forged commit/tree claims and
+  contaminated Git/Python/token environments fail closed.
+- [ ] An independent re-archive of the claimed commit matches the snapshot manifest before
+  either Uvicorn child starts.
+- [ ] Two real Uvicorn children start only from the immutable snapshot, become healthy and exit
+  through the bounded cleanup path.
+- [ ] The snapshot orchestrator timeout/output-limit/original-group-residual path proves its
+  original POSIX process group is empty after bounded TERM/KILL cleanup; this does not cover a
+  descendant that deliberately creates a new session with `setsid()`.
 - [ ] Plan creation returns proposed version one.
 - [ ] Every referenced file resolves to plan evidence.
+- [ ] Existing file actions have same-path evidence; create actions cannot conflict with an
+  observed path.
+- [ ] Verification intents are evidence-backed and unexecuted;
+  `verification_readiness="ready"` requires a pytest intent, while `needs_human_input` remains
+  non-executable planning output.
 - [ ] Correct expected version produces approved version two.
 - [ ] Stale and duplicate approval are rejected.
 - [ ] Restarting the process preserves the approved record.
-- [ ] The temporary database has restricted permissions and is cleaned up.
+- [ ] On POSIX, the frozen database target, final parent, database, `-journal`, `-wal` and `-shm`
+  satisfy the documented owner/type/link/mode contract and SQLite actually reports WAL.
+- [ ] The post-run snapshot manifest and live commit/tree/clean identity remain unchanged.
+- [ ] The Evidence Capsule records source commit/tree, manifest hash, file count, harness hash and
+  lockfile hash.
+- [ ] Managed direct children, members remaining in the original POSIX process group, observed
+  ports, temporary database and snapshot are cleaned up.
 - [ ] Any live GitHub smoke records date, repository, ref and tree SHA.
 - [ ] No GitHub write endpoint, host shell execution or credential leak occurs.
 - [ ] The aggregate local quality command remains green.
@@ -340,6 +369,9 @@ snapshot used.
 
 - Treating the local approved-by label as authenticated identity.
 - Triggering execution from approval.
+- Importing or executing the fixed-root fixture repository.
+- Defending against a malicious same-UID pathname swap, complete macOS ACL analysis or
+  non-POSIX-equivalent inode/link guarantees.
 - Production tenancy, PostgreSQL or deployment.
 
 ## M0-04 — Publish Planning Baseline 0.1 with hosted CI evidence
@@ -373,25 +405,29 @@ run.
 
 **Desired behavior:**
 
-A focused PR contains the recovered and verified Planning Slice, synchronized
-documentation and CI workflow. GitHub Actions executes the same aggregate quality
-contract used locally. Linear receives links to the PR, check run and final commit.
+A focused PR contains the recovered and verified Planning Slice, synchronized documentation and
+CI workflow. GitHub Actions executes the same aggregate quality contract used locally on the
+exact final commit. Linear receives links to the PR, hosted check/run and that final SHA. The PR
+remains open for human review and is not automatically merged.
 
 **Key interfaces:**
 
 - Git branch and commit history — preserve a reviewable recovery path.
 - GitHub Actions — execute the repository's aggregate quality command from the lockfile.
-- Development-status evidence — distinguish local checks, live external smoke and hosted
-  CI.
+- PR and Linear Evidence Capsule — record the exact external publication evidence; repository
+  development-status documents retain only contracts and explicitly labelled history.
 
 **Bootstrap acceptance criteria (unchecked snapshot; not live):**
 
 - [ ] The PR contains no unrelated files or secrets.
 - [ ] Documentation matches the implemented scope and known limitations.
 - [ ] The CI workflow installs from the committed lockfile.
-- [ ] Hosted format, lint, type and test checks are observed green.
-- [ ] The PR records the local evidence and exact commit SHA.
-- [ ] The corresponding Linear issue links the PR and check run.
+- [ ] Hosted format, lint, type, test, smoke and build checks are observed green on the exact
+  final SHA.
+- [ ] The PR records the cold local gate, snapshot smoke, security diff base/full head SHAs and
+  exact commit SHA.
+- [ ] The corresponding Linear issue links the PR and hosted run, recording workflow/job check
+  name (`ci` / `check` for this workflow), run URL or ID, event, tested SHA and conclusion.
 - [ ] Human approval is required before merge.
 - [ ] The final local worktree is clean.
 
@@ -400,6 +436,48 @@ contract used locally. Linear receives links to the PR, check run and final comm
 - Automatic merge.
 - Product execution, GitHub App write permissions or PR creation by RepoPilot.
 - Hosted application deployment.
+
+## Current M0-03/M0-04 executable-contract clarification — 2026-08-27
+
+The unchecked issue templates above remain the historical 2026-08-24 bootstrap record; this
+clarification does not rewrite their historical state. Current COL-7/COL-8 acceptance and their
+external Evidence Capsules must use the executable contracts below, with
+[architecture](architecture.md) and [acceptance](product/acceptance.md) as the detailed sources.
+
+For M0-03:
+
+- the Schema route exposes structural JSON Schema plus
+  `x-repopilot-semantic-constraints`; Pydantic runtime validators separately enforce repository
+  identity, evidence/action/readiness semantics, UTC times, the unique
+  `proposed/version 1 → approved/version 2/from_version 1` transition and the
+  SQL-row/document storage envelope;
+- Git commands have a 15-second deadline, 1 MiB metadata or 32 MiB archive stdout and 256 KiB
+  stderr; archive/member/file/total/read ceilings are respectively 32 MiB, 4,096, 8 MiB,
+  24 MiB and 64 KiB chunks;
+- the snapshot orchestrator has 1 MiB/256 KiB stdout/stderr and a 210-second subprocess deadline
+  (not a total `make smoke-m0` deadline); HTTP requests are 5 seconds, Uvicorn ready/health and
+  graceful/TERM/KILL/observed-port waits are 10 seconds each, and original-group TERM/KILL waits
+  are 2/5 seconds;
+- runtime children receive only the exact minimal environment plus snapshot `PYTHONPATH`; Git
+  children receive only the fixed no-credential environment, and Uvicorn stdout/stderr is
+  discarded;
+- containment is exactly
+  `managed_direct_children_original_posix_process_group_and_observed_ports`, not a guarantee for
+  descendants that deliberately escape through `setsid()`;
+- POSIX database and live sidecars use lstat/O_NOFOLLOW/euid/regular/nlink=1/0600/inode checks;
+  after graceful stops all sidecars are absent, the database header proves WAL, immutable
+  read-only integrity is `ok`, and exactly one approved/version-two record remains.
+
+For M0-04:
+
+- cold local and `ci`/`check` first run locked `uv sync --no-install-project` for
+  `hatchling`/dependencies, then locked `uv sync --no-build-isolation` for the project; distribution
+  build uses `uv build --no-build-isolation` and does not independently resolve the backend;
+- hosted checkout explicitly targets the event's PR head SHA, verifies actual `HEAD`, records
+  `HEAD^{tree}` and requires a clean worktree;
+- PR and Linear record the full security base/head SHA, exact candidate commit/tree, cold gate,
+  smoke Capsule, workflow/job, run URL or ID, event, tested SHA and observed-green conclusion;
+  final candidate SHA remains external to its own tree, and M0 never merges automatically.
 
 ## Later backlog skeleton
 

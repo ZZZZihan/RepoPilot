@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
+import os
+import stat
 from pathlib import Path
 
 import httpx
@@ -18,11 +21,28 @@ from repopilot.errors import (
     RepositoryTimeoutError,
     RepositoryUpstreamError,
 )
-from repopilot.inspection import InspectionLimits, RepositorySnapshot, SelectedEntry
-from repopilot.models import GitHubRepositoryInput
+from repopilot.inspection import (
+    InspectedDocument,
+    InspectionLimits,
+    RepositorySnapshot,
+    SelectedEntry,
+)
+from repopilot.models import EvidenceCategory, GitHubRepositoryInput, InspectedRepository
 
 _REPOSITORY = GitHubRepositoryInput(url="https://github.com/acme/tiny")
 _TREE_SHA = "f" * 40
+
+
+def _git_blob_oid(payload: bytes, *, algorithm: str = "sha1") -> str:
+    object_payload = f"blob {len(payload)}\0".encode("ascii") + payload
+    if algorithm == "sha1":
+        return hashlib.sha1(  # noqa: S324 - Git object identity is SHA-1.
+            object_payload,
+            usedforsecurity=False,
+        ).hexdigest()
+    if algorithm == "sha256":
+        return hashlib.sha256(object_payload).hexdigest()
+    raise ValueError(f"unsupported Git object algorithm: {algorithm}")
 
 
 def _inspect(
@@ -43,12 +63,14 @@ def _tree_entry(
     *,
     sha: str = "a" * 40,
     size: int | bool | None = None,
+    mode: str = "100644",
 ) -> dict[str, object]:
     return {
         "path": path,
         "type": "blob",
         "size": len(payload) if size is None else size,
         "sha": sha,
+        "mode": mode,
     }
 
 
@@ -56,16 +78,136 @@ def _tree_response(
     entries: list[dict[str, object]],
     *,
     padding: str = "",
+    tree_sha: str = _TREE_SHA,
 ) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "sha": _TREE_SHA,
+            "sha": tree_sha,
             "truncated": False,
             "tree": entries,
             "padding": padding,
         },
     )
+
+
+def _inspected_document(
+    *,
+    path: str = "src/example.py",
+    category: EvidenceCategory = EvidenceCategory.SOURCE,
+    content: str = "VALUE = 'π'\n",
+    size: int | None = None,
+    sha256: str | None = None,
+) -> InspectedDocument:
+    payload = content.encode("utf-8")
+    return InspectedDocument(
+        path=path,
+        category=category,
+        size=len(payload) if size is None else size,
+        sha256=hashlib.sha256(payload).hexdigest() if sha256 is None else sha256,
+        content=content,
+    )
+
+
+def _repository_snapshot(
+    *,
+    all_paths: tuple[str, ...] | None = None,
+    documents: tuple[InspectedDocument, ...] | None = None,
+    limits: InspectionLimits | None = None,
+) -> RepositorySnapshot:
+    inspected_documents = documents if documents is not None else (_inspected_document(),)
+    repository_paths = (
+        all_paths
+        if all_paths is not None
+        else tuple(document.path for document in inspected_documents)
+    )
+    return RepositorySnapshot(
+        repository=InspectedRepository(
+            url="https://github.com/acme/tiny",
+            owner="acme",
+            name="tiny",
+            ref="main",
+            tree_sha=_TREE_SHA,
+        ),
+        all_paths=repository_paths,
+        documents=inspected_documents,
+        selection_truncated=False,
+        limits=limits or InspectionLimits(),
+    )
+
+
+def test_inspected_document_binds_utf8_byte_size_and_digest_to_content() -> None:
+    document = _inspected_document(content="π\n")
+
+    assert document.size == len("π\n".encode())
+    assert document.sha256 == hashlib.sha256("π\n".encode()).hexdigest()
+
+    with pytest.raises(ValueError, match="UTF-8 byte length"):
+        _inspected_document(content="π\n", size=len("π\n"))
+    with pytest.raises(ValueError, match="sha256 must match"):
+        _inspected_document(sha256="0" * 64)
+
+
+def test_inspected_document_requires_safe_path_and_canonical_category() -> None:
+    with pytest.raises(ValueError, match="safe repository path"):
+        _inspected_document(path="../src/example.py")
+    with pytest.raises(ValueError, match="canonical path classification"):
+        _inspected_document(category=EvidenceCategory.TEST)
+
+
+@pytest.mark.parametrize(
+    ("all_paths", "message"),
+    [
+        ((), "at least one repository path"),
+        (("../src/example.py",), "safe repository paths"),
+        (("src/example.py", "src/example.py"), "all_paths must be unique"),
+    ],
+)
+def test_repository_snapshot_requires_safe_unique_nonempty_all_paths(
+    all_paths: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _repository_snapshot(all_paths=all_paths)
+
+
+def test_repository_snapshot_requires_unique_documents_with_tree_membership() -> None:
+    document = _inspected_document()
+    with pytest.raises(ValueError, match="at least one inspected document"):
+        _repository_snapshot(all_paths=(document.path,), documents=())
+    with pytest.raises(ValueError, match="document paths must be unique"):
+        _repository_snapshot(
+            all_paths=(document.path,),
+            documents=(document, document),
+        )
+
+    foreign_document = _inspected_document(path="src/foreign.py")
+    with pytest.raises(ValueError, match="document paths must belong to all_paths"):
+        _repository_snapshot(
+            all_paths=(document.path,),
+            documents=(foreign_document,),
+        )
+
+
+def test_repository_snapshot_revalidates_document_integrity() -> None:
+    forged_document = _inspected_document()
+    object.__setattr__(forged_document, "sha256", "0" * 64)
+
+    with pytest.raises(ValueError, match="sha256 must match"):
+        _repository_snapshot(documents=(forged_document,))
+
+
+def test_repository_snapshot_preserves_distinct_case_variant_paths() -> None:
+    uppercase = _inspected_document(path="src/Example.py")
+    lowercase = _inspected_document(path="src/example.py")
+    all_paths = (lowercase.path, uppercase.path)
+
+    snapshot = _repository_snapshot(
+        all_paths=all_paths,
+        documents=(lowercase, uppercase),
+    )
+
+    assert snapshot.all_paths == all_paths
 
 
 def _github_transport(
@@ -107,10 +249,7 @@ def test_github_adapter_reads_only_selected_bounded_blobs() -> None:
         "docs/conf.py": b"project = 'Tiny'\n",
         "bench.py": b"def benchmark():\n    return True\n",
     }
-    blob_shas = {
-        path: hashlib.sha1(payload, usedforsecurity=False).hexdigest()
-        for path, payload in files.items()
-    }
+    blob_shas = {path: _git_blob_oid(payload) for path, payload in files.items()}
     requests: list[httpx.Request] = []
     snapshot = _inspect(
         _github_transport(
@@ -121,6 +260,8 @@ def test_github_adapter_reads_only_selected_bounded_blobs() -> None:
                 blob_shas[path]: httpx.Response(
                     200,
                     json={
+                        "sha": blob_shas[path],
+                        "size": len(payload),
                         "encoding": "base64",
                         "content": base64.b64encode(payload).decode("ascii"),
                     },
@@ -136,6 +277,7 @@ def test_github_adapter_reads_only_selected_bounded_blobs() -> None:
     excluded_support_files = {"bench.py", "docs/conf.py"}
     assert {document.path for document in snapshot.documents} == set(files) - excluded_support_files
     assert all(request.url.host == "api.github.com" for request in requests)
+    assert all(request.headers["accept-encoding"] == "identity" for request in requests)
     tree_request = next(request for request in requests if "/git/trees/" in request.url.path)
     assert tree_request.url.params["recursive"] == "1"
     assert sum("/git/blobs/" in request.url.path for request in requests) == 4
@@ -176,6 +318,19 @@ def test_github_adapter_rejects_invalid_json(body: bytes, message: str) -> None:
         _inspect(_github_transport(metadata=httpx.Response(200, content=body)))
 
 
+def test_github_adapter_rejects_encoded_responses_before_reading_content() -> None:
+    with pytest.raises(RepositoryUpstreamError, match="content encoding"):
+        _inspect(
+            _github_transport(
+                metadata=httpx.Response(
+                    200,
+                    headers={"Content-Encoding": "gzip"},
+                    content=gzip.compress(b'{"default_branch":"main"}'),
+                )
+            )
+        )
+
+
 @pytest.mark.parametrize("oversized_phase", ["metadata", "tree", "blob"])
 def test_github_adapter_bounds_every_response(oversized_phase: str) -> None:
     payload = b"x" * 400 if oversized_phase == "blob" else b"x"
@@ -194,6 +349,8 @@ def test_github_adapter_bounds_every_response(oversized_phase: str) -> None:
     blob = httpx.Response(
         200,
         json={
+            "sha": blob_sha,
+            "size": len(payload),
             "encoding": "base64",
             "content": base64.b64encode(payload).decode("ascii"),
         },
@@ -218,6 +375,9 @@ def test_github_adapter_bounds_every_response(oversized_phase: str) -> None:
         ("size", True),
         ("size", -1),
         ("sha", "not-an-object-id"),
+        ("sha", "a" * 41),
+        ("sha", "a" * 63),
+        ("sha", "A" * 40),
     ],
 )
 def test_github_adapter_fails_closed_on_malformed_blob_entry(field: str, value: object) -> None:
@@ -227,6 +387,24 @@ def test_github_adapter_fails_closed_on_malformed_blob_entry(field: str, value: 
 
     with pytest.raises(RepositoryUpstreamError, match="malformed blob tree entry"):
         _inspect(_github_transport(tree=_tree_response([entry])))
+
+
+@pytest.mark.parametrize("mode", [None, "", "100600", "120000", "160000"])
+def test_github_adapter_rejects_non_regular_blob_modes(mode: object) -> None:
+    payload = b"[project]\n"
+    entry = _tree_entry("pyproject.toml", payload)
+    entry["mode"] = mode
+
+    with pytest.raises(RepositoryUpstreamError, match="non-regular or malformed"):
+        _inspect(_github_transport(tree=_tree_response([entry])))
+
+
+def test_github_adapter_rejects_duplicate_blob_paths() -> None:
+    payload = b"[project]\n"
+    entry = _tree_entry("pyproject.toml", payload)
+
+    with pytest.raises(RepositoryUpstreamError, match="duplicate blob tree path"):
+        _inspect(_github_transport(tree=_tree_response([entry, dict(entry)])))
 
 
 @pytest.mark.parametrize(
@@ -249,17 +427,180 @@ def test_github_adapter_rejects_invalid_blob_payloads(
                 blobs={
                     blob_sha: httpx.Response(
                         200,
-                        json={"encoding": "base64", "content": blob_content},
+                        json={
+                            "sha": blob_sha,
+                            "size": tree_size,
+                            "encoding": "base64",
+                            "content": blob_content,
+                        },
                     )
                 },
             )
         )
 
 
+@pytest.mark.parametrize("response_sha", [None, "not-an-object-id", "b" * 40])
+def test_github_adapter_binds_blob_response_to_requested_object(
+    response_sha: str | None,
+) -> None:
+    payload = b"[project]\n"
+    blob_sha = _git_blob_oid(payload)
+    response = {
+        "size": len(payload),
+        "encoding": "base64",
+        "content": base64.b64encode(payload).decode("ascii"),
+    }
+    if response_sha is not None:
+        response["sha"] = response_sha
+
+    with pytest.raises(RepositoryUpstreamError, match="requested object identifier"):
+        _inspect(
+            _github_transport(
+                tree=_tree_response([_tree_entry("pyproject.toml", payload, sha=blob_sha)]),
+                blobs={blob_sha: httpx.Response(200, json=response)},
+            )
+        )
+
+
+@pytest.mark.parametrize("response_size", [None, True, -1, 0, 10_000])
+def test_github_adapter_binds_blob_response_size_to_tree_entry(
+    response_size: object,
+) -> None:
+    payload = b"[project]\n"
+    blob_sha = _git_blob_oid(payload)
+    response: dict[str, object] = {
+        "sha": blob_sha,
+        "encoding": "base64",
+        "content": base64.b64encode(payload).decode("ascii"),
+    }
+    if response_size is not None:
+        response["size"] = response_size
+
+    with pytest.raises(RepositoryUpstreamError, match="tree entry size"):
+        _inspect(
+            _github_transport(
+                tree=_tree_response([_tree_entry("pyproject.toml", payload, sha=blob_sha)]),
+                blobs={blob_sha: httpx.Response(200, json=response)},
+            )
+        )
+
+
+def test_github_adapter_recomputes_blob_object_identity_from_content() -> None:
+    payload = b"[project]\n"
+    claimed_blob_sha = _git_blob_oid(b"[project]\r")
+
+    with pytest.raises(RepositoryUpstreamError, match="blob content did not match"):
+        _inspect(
+            _github_transport(
+                tree=_tree_response([_tree_entry("pyproject.toml", payload, sha=claimed_blob_sha)]),
+                blobs={
+                    claimed_blob_sha: httpx.Response(
+                        200,
+                        json={
+                            "sha": claimed_blob_sha,
+                            "size": len(payload),
+                            "encoding": "base64",
+                            "content": base64.b64encode(payload).decode("ascii"),
+                        },
+                    )
+                },
+            )
+        )
+
+
+def test_github_adapter_accepts_a_wrapped_one_mebibyte_blob_within_limits() -> None:
+    payload = b"x" * (1024 * 1024)
+    blob_sha = _git_blob_oid(payload)
+    encoded = base64.b64encode(payload).decode("ascii")
+    github_wrapped_content = "\n".join(
+        encoded[index : index + 60] for index in range(0, len(encoded), 60)
+    )
+
+    snapshot = _inspect(
+        _github_transport(
+            tree=_tree_response([_tree_entry("pyproject.toml", payload, sha=blob_sha)]),
+            blobs={
+                blob_sha: httpx.Response(
+                    200,
+                    json={
+                        "sha": blob_sha,
+                        "size": len(payload),
+                        "encoding": "base64",
+                        "content": github_wrapped_content,
+                    },
+                )
+            },
+        ),
+        limits=InspectionLimits(
+            max_file_bytes=len(payload),
+            max_total_bytes=len(payload),
+            max_response_bytes=2 * 1024 * 1024,
+        ),
+    )
+
+    assert snapshot.documents[0].size == len(payload)
+
+
+def test_github_adapter_accepts_sha256_blob_identity_and_executable_mode() -> None:
+    payload = b"[project]\n"
+    blob_sha = _git_blob_oid(payload, algorithm="sha256")
+
+    snapshot = _inspect(
+        _github_transport(
+            tree=_tree_response(
+                [
+                    _tree_entry(
+                        "pyproject.toml",
+                        payload,
+                        sha=blob_sha,
+                        mode="100755",
+                    )
+                ],
+                tree_sha="f" * 64,
+            ),
+            blobs={
+                blob_sha: httpx.Response(
+                    200,
+                    json={
+                        "sha": blob_sha,
+                        "size": len(payload),
+                        "encoding": "base64",
+                        "content": base64.b64encode(payload).decode("ascii"),
+                    },
+                )
+            },
+        )
+    )
+
+    assert snapshot.documents[0].sha256 == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("tree_sha", "blob_algorithm"),
+    [("f" * 40, "sha256"), ("f" * 64, "sha1")],
+)
+def test_github_adapter_rejects_mixed_repository_object_formats(
+    tree_sha: str,
+    blob_algorithm: str,
+) -> None:
+    payload = b"[project]\n"
+    blob_sha = _git_blob_oid(payload, algorithm=blob_algorithm)
+
+    with pytest.raises(RepositoryUpstreamError, match="malformed blob tree entry"):
+        _inspect(
+            _github_transport(
+                tree=_tree_response(
+                    [_tree_entry("pyproject.toml", payload, sha=blob_sha)],
+                    tree_sha=tree_sha,
+                )
+            )
+        )
+
+
 def test_github_adapter_omits_non_utf8_blob_and_marks_selection_truncated() -> None:
     files = {
-        "README.md": ("a" * 40, b"\xff"),
-        "pyproject.toml": ("b" * 40, b"[project]\n"),
+        "README.md": (_git_blob_oid(b"\xff"), b"\xff"),
+        "pyproject.toml": (_git_blob_oid(b"[project]\n"), b"[project]\n"),
     }
     snapshot = _inspect(
         _github_transport(
@@ -270,6 +611,8 @@ def test_github_adapter_omits_non_utf8_blob_and_marks_selection_truncated() -> N
                 sha: httpx.Response(
                     200,
                     json={
+                        "sha": sha,
+                        "size": len(payload),
                         "encoding": "base64",
                         "content": base64.b64encode(payload).decode("ascii"),
                     },
@@ -290,6 +633,19 @@ def test_github_adapter_rejects_truncated_tree() -> None:
     )
 
     with pytest.raises(InspectionLimitExceededError, match="truncated"):
+        _inspect(_github_transport(tree=tree))
+
+
+@pytest.mark.parametrize("tree_sha", ["a" * 41, "a" * 63, "A" * 40])
+def test_github_adapter_requires_an_exact_lowercase_tree_identifier(
+    tree_sha: str,
+) -> None:
+    tree = httpx.Response(
+        200,
+        json={"sha": tree_sha, "truncated": False, "tree": []},
+    )
+
+    with pytest.raises(RepositoryUpstreamError, match="invalid tree identifier"):
         _inspect(_github_transport(tree=tree))
 
 
@@ -334,7 +690,12 @@ def test_github_adapter_enforces_file_byte_limit_independently() -> None:
         blobs={
             blob_sha: httpx.Response(
                 200,
-                json={"encoding": "base64", "content": base64.b64encode(b"xxxxx").decode()},
+                json={
+                    "sha": blob_sha,
+                    "size": 4,
+                    "encoding": "base64",
+                    "content": base64.b64encode(b"xxxxx").decode(),
+                },
             )
         },
     )
@@ -345,8 +706,8 @@ def test_github_adapter_enforces_file_byte_limit_independently() -> None:
 
 def test_github_adapter_enforces_total_byte_budget_independently() -> None:
     files = {
-        "README.md": ("a" * 40, b"read"),
-        "pyproject.toml": ("b" * 40, b"conf"),
+        "README.md": (_git_blob_oid(b"read"), b"read"),
+        "pyproject.toml": (_git_blob_oid(b"conf"), b"conf"),
     }
     requests: list[httpx.Request] = []
     snapshot = _inspect(
@@ -357,7 +718,12 @@ def test_github_adapter_enforces_total_byte_budget_independently() -> None:
             blobs={
                 sha: httpx.Response(
                     200,
-                    json={"encoding": "base64", "content": base64.b64encode(payload).decode()},
+                    json={
+                        "sha": sha,
+                        "size": len(payload),
+                        "encoding": "base64",
+                        "content": base64.b64encode(payload).decode(),
+                    },
                 )
                 for sha, payload in files.values()
             },
@@ -368,7 +734,7 @@ def test_github_adapter_enforces_total_byte_budget_independently() -> None:
 
     assert [document.path for document in snapshot.documents] == ["README.md"]
     assert [request.url.path for request in requests if "/git/blobs/" in request.url.path] == [
-        f"/repos/acme/tiny/git/blobs/{'a' * 40}"
+        f"/repos/acme/tiny/git/blobs/{_git_blob_oid(b'read')}"
     ]
     assert snapshot.selection_truncated is True
 
@@ -522,5 +888,182 @@ def test_fixed_root_adapter_stops_at_tree_entry_bound(
         asyncio.run(
             inspector.inspect(
                 GitHubRepositoryInput(url="https://github.com/acme/tiny-python", ref="main")
+            )
+        )
+
+
+def _fixed_root_snapshot(
+    root: Path,
+    *,
+    limits: InspectionLimits | None = None,
+) -> RepositorySnapshot:
+    inspector = FixedRootRepositoryInspector(
+        root=root,
+        owner="acme",
+        name="fixture",
+        limits=limits or InspectionLimits(),
+    )
+    return asyncio.run(
+        inspector.inspect(GitHubRepositoryInput(url="https://github.com/acme/fixture", ref="main"))
+    )
+
+
+def test_fixed_root_tree_identity_hashes_unselected_file_content(tmp_path: Path) -> None:
+    root = tmp_path / "fixture"
+    source = root / "src" / "hidden.py"
+    source.parent.mkdir(parents=True)
+    (root / "README.md").write_text("# Fixture\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    source.write_bytes(b"A")
+    limits = InspectionLimits(max_selected_files=1)
+
+    before = _fixed_root_snapshot(root, limits=limits)
+    source.write_bytes(b"B")
+    after = _fixed_root_snapshot(root, limits=limits)
+
+    assert [document.path for document in before.documents] == ["README.md"]
+    assert before.repository.tree_sha != after.repository.tree_sha
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Git-like executable mode is POSIX-only")
+def test_fixed_root_tree_identity_hashes_regular_file_executable_mode(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "fixture"
+    source = root / "src" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    source.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    before = _fixed_root_snapshot(root)
+    source.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    after = _fixed_root_snapshot(root)
+
+    assert before.repository.tree_sha != after.repository.tree_sha
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Git-like executable mode is POSIX-only")
+@pytest.mark.parametrize("non_owner_execute", [stat.S_IXGRP, stat.S_IXOTH])
+def test_fixed_root_git_mode_ignores_non_owner_execute_bits(
+    tmp_path: Path,
+    non_owner_execute: int,
+) -> None:
+    root = tmp_path / "fixture"
+    source = root / "src" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    base_mode = stat.S_IRUSR | stat.S_IWUSR
+    source.chmod(base_mode)
+    before = _fixed_root_snapshot(root)
+
+    source.chmod(base_mode | non_owner_execute)
+    after = _fixed_root_snapshot(root)
+
+    assert before.repository.tree_sha == after.repository.tree_sha
+
+
+def test_fixed_root_tree_identity_uses_unambiguous_entry_framing(
+    tmp_path: Path,
+) -> None:
+    payload_a = b"A"
+    payload_b = b"B"
+    digest_a = hashlib.sha256(payload_a).hexdigest()
+    one_entry_root = tmp_path / "one-entry"
+    two_entry_root = tmp_path / "two-entry"
+    one_entry_root.mkdir()
+    two_entry_root.mkdir()
+
+    (one_entry_root / f"a.py1{digest_a}b.py").write_bytes(payload_b)
+    (two_entry_root / "a.py").write_bytes(payload_a)
+    (two_entry_root / "b.py").write_bytes(payload_b)
+
+    one_entry = _fixed_root_snapshot(one_entry_root)
+    two_entries = _fixed_root_snapshot(two_entry_root)
+
+    assert one_entry.repository.tree_sha != two_entries.repository.tree_sha
+
+
+@pytest.mark.skipif(os.name != "posix", reason="O_NOFOLLOW coverage is POSIX-only")
+def test_fixed_root_rejects_a_selected_file_swapped_to_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "fixture"
+    root.mkdir()
+    selected = root / "pyproject.toml"
+    selected.write_text("[project]\n", encoding="utf-8")
+    outside = tmp_path / "outside.toml"
+    outside.write_text("[project]\nname='outside'\n", encoding="utf-8")
+    inspector = FixedRootRepositoryInspector(
+        root=root,
+        owner="acme",
+        name="fixture",
+        limits=InspectionLimits(),
+    )
+    original_read = inspector._read_stable_file
+
+    def swap_before_read(
+        fixture_file: object,
+        *,
+        capture_payload: bool,
+    ) -> tuple[bytes, bytes | None]:
+        if fixture_file.path == "pyproject.toml":
+            selected.unlink()
+            selected.symlink_to(outside)
+        return original_read(fixture_file, capture_payload=capture_payload)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(inspector, "_read_stable_file", swap_before_read)
+
+    with pytest.raises(RepositoryUpstreamError, match="snapshot file was opened"):
+        asyncio.run(
+            inspector.inspect(
+                GitHubRepositoryInput(
+                    url="https://github.com/acme/fixture",
+                    ref="main",
+                )
+            )
+        )
+
+
+def test_fixed_root_rejects_same_size_content_changed_and_restored_after_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "fixture"
+    root.mkdir()
+    selected = root / "pyproject.toml"
+    original_payload = b"[project]\n"
+    selected.write_bytes(original_payload)
+    inspector = FixedRootRepositoryInspector(
+        root=root,
+        owner="acme",
+        name="fixture",
+        limits=InspectionLimits(),
+    )
+    original_read = inspector._read_stable_file
+    mutation_completed = False
+
+    def mutate_and_restore_after_read(
+        fixture_file: object,
+        *,
+        capture_payload: bool,
+    ) -> tuple[bytes, bytes | None]:
+        nonlocal mutation_completed
+        result = original_read(fixture_file, capture_payload=capture_payload)  # type: ignore[arg-type]
+        if fixture_file.path == "pyproject.toml" and not mutation_completed:
+            mutation_completed = True
+            selected.write_bytes(b"X" * len(original_payload))
+            selected.write_bytes(original_payload)
+        return result
+
+    monkeypatch.setattr(inspector, "_read_stable_file", mutate_and_restore_after_read)
+
+    with pytest.raises(RepositoryUpstreamError, match="content snapshot"):
+        asyncio.run(
+            inspector.inspect(
+                GitHubRepositoryInput(
+                    url="https://github.com/acme/fixture",
+                    ref="main",
+                )
             )
         )

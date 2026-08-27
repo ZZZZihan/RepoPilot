@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import stat
+import struct
+from dataclasses import dataclass
 from pathlib import Path
 
 from repopilot.errors import (
     InspectionLimitExceededError,
     RepositoryNotFoundError,
+    RepositoryUpstreamError,
     UnsupportedRepositoryError,
 )
 from repopilot.inspection import (
@@ -25,6 +30,24 @@ from repopilot.inspection import (
     select_entries,
 )
 from repopilot.models import GitHubRepositoryInput, InspectedRepository
+
+_SNAPSHOT_DOMAIN = b"RepoPilot.FixedRootSnapshot\x00v1\x00"
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class _FixtureFile:
+    """Metadata frozen before a fixture file is opened for snapshotting."""
+
+    path: str
+    absolute_path: Path
+    size: int
+    device: int
+    inode: int
+    stat_mode: int
+    modified_ns: int
+    changed_ns: int
+    git_mode: bytes
 
 
 class FixedRootRepositoryInspector:
@@ -60,22 +83,50 @@ class FixedRootRepositoryInspector:
                 "requested ref is not available in the fixed fixture adapter"
             )
 
-        entries: list[TreeEntry] = []
+        fixture_files: list[_FixtureFile] = []
+        skipped_unsafe = False
         for path in self._root.rglob("*"):
-            if path.is_symlink() or not path.is_file():
+            try:
+                metadata = path.lstat()
+            except OSError as exc:
+                raise RepositoryUpstreamError(
+                    "fixture repository changed while its file list was inspected"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 continue
             relative = path.relative_to(self._root).as_posix()
             if ".git" in path.relative_to(self._root).parts or not is_safe_repository_path(
                 relative
             ):
                 continue
-            size = path.stat().st_size
-            entries.append(TreeEntry(path=relative, size=size))
-            if len(entries) > self._limits.max_tree_entries:
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as exc:
+                raise RepositoryUpstreamError(
+                    "fixture repository changed while its paths were resolved"
+                ) from exc
+            if resolved != path or not resolved.is_relative_to(self._root):
+                skipped_unsafe = True
+                continue
+            fixture_files.append(
+                _FixtureFile(
+                    path=relative,
+                    absolute_path=path,
+                    size=metadata.st_size,
+                    device=metadata.st_dev,
+                    inode=metadata.st_ino,
+                    stat_mode=metadata.st_mode,
+                    modified_ns=metadata.st_mtime_ns,
+                    changed_ns=metadata.st_ctime_ns,
+                    git_mode=b"100755" if metadata.st_mode & stat.S_IXUSR else b"100644",
+                )
+            )
+            if len(fixture_files) > self._limits.max_tree_entries:
                 raise InspectionLimitExceededError(
                     f"repository has more than {self._limits.max_tree_entries} files"
                 )
-        entries.sort(key=lambda entry: entry.path.lower())
+        fixture_files.sort(key=lambda item: (item.path.casefold(), item.path))
+        entries = [TreeEntry(path=item.path, size=item.size) for item in fixture_files]
 
         if not entries:
             raise UnsupportedRepositoryError("repository has no inspectable files")
@@ -83,21 +134,31 @@ class FixedRootRepositoryInspector:
             raise UnsupportedRepositoryError("repository does not appear to be a Python repository")
 
         selection = select_entries(entries, self._limits)
+        selected_by_path = {item.entry.path: item for item in selection.entries}
         documents: list[InspectedDocument] = []
         snapshot_hash = hashlib.sha256()
-        for entry in entries:
-            snapshot_hash.update(entry.path.encode("utf-8"))
-            snapshot_hash.update(str(entry.size).encode("ascii"))
+        snapshot_hash.update(_SNAPSHOT_DOMAIN)
+        snapshot_hash.update(struct.pack(">Q", len(fixture_files)))
 
-        skipped_non_text = False
+        skipped_non_text = skipped_unsafe
         total_bytes = 0
-        for selected in selection.entries:
-            file_path = self._root / selected.entry.path
-            resolved = file_path.resolve(strict=True)
-            if not resolved.is_relative_to(self._root):
-                skipped_non_text = True
+        for fixture_file in fixture_files:
+            selected = selected_by_path.get(fixture_file.path)
+            digest, payload = self._read_stable_file(
+                fixture_file,
+                capture_payload=selected is not None,
+            )
+            encoded_path = fixture_file.path.encode("utf-8")
+            snapshot_hash.update(struct.pack(">I", len(encoded_path)))
+            snapshot_hash.update(encoded_path)
+            snapshot_hash.update(fixture_file.git_mode)
+            snapshot_hash.update(struct.pack(">Q", fixture_file.size))
+            snapshot_hash.update(digest)
+
+            if selected is None:
                 continue
-            payload = resolved.read_bytes()
+            if payload is None:
+                raise AssertionError("selected fixture payload was not captured")
             if len(payload) > self._limits.max_file_bytes:
                 raise InspectionLimitExceededError(
                     "fixture file exceeded the configured byte limit"
@@ -112,18 +173,27 @@ class FixedRootRepositoryInspector:
             except UnicodeDecodeError:
                 skipped_non_text = True
                 continue
-            digest = hashlib.sha256(payload).hexdigest()
-            snapshot_hash.update(selected.entry.path.encode("utf-8"))
-            snapshot_hash.update(digest.encode("ascii"))
+            digest_hex = digest.hex()
             documents.append(
                 InspectedDocument(
                     path=selected.entry.path,
                     category=selected.category,
                     size=len(payload),
-                    sha256=digest,
+                    sha256=digest_hex,
                     content=content,
                 )
             )
+
+        # Revalidate every original pathname after all bytes have been read. This
+        # catches an early file that changes while a later entry is being hashed.
+        for fixture_file in fixture_files:
+            try:
+                final_path = fixture_file.absolute_path.lstat()
+            except OSError as exc:
+                raise RepositoryUpstreamError(
+                    "fixture repository changed after its content snapshot was captured"
+                ) from exc
+            self._assert_same_file(fixture_file, final_path)
 
         if not documents:
             raise UnsupportedRepositoryError(
@@ -144,3 +214,67 @@ class FixedRootRepositoryInspector:
             selection_truncated=selection.truncated or skipped_non_text,
             limits=self._limits,
         )
+
+    def _read_stable_file(
+        self,
+        fixture_file: _FixtureFile,
+        *,
+        capture_payload: bool,
+    ) -> tuple[bytes, bytes | None]:
+        """Hash one regular file and reject a path or inode that changes mid-read."""
+
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(fixture_file.absolute_path, flags)
+        except OSError as exc:
+            raise RepositoryUpstreamError(
+                "fixture repository changed while a snapshot file was opened"
+            ) from exc
+
+        digest = hashlib.sha256()
+        payload_parts: list[bytes] | None = [] if capture_payload else None
+        try:
+            opened = os.fstat(descriptor)
+            self._assert_same_file(fixture_file, opened)
+            with os.fdopen(descriptor, "rb", closefd=True) as stream:
+                descriptor = -1
+                while chunk := stream.read(_READ_CHUNK_BYTES):
+                    digest.update(chunk)
+                    if payload_parts is not None:
+                        payload_parts.append(chunk)
+                finished = os.fstat(stream.fileno())
+            self._assert_same_file(fixture_file, finished)
+            final_path = fixture_file.absolute_path.lstat()
+            self._assert_same_file(fixture_file, final_path)
+        except OSError as exc:
+            raise RepositoryUpstreamError(
+                "fixture repository changed while a snapshot file was read"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+        payload = b"".join(payload_parts) if payload_parts is not None else None
+        if payload is not None and len(payload) != fixture_file.size:
+            raise RepositoryUpstreamError(
+                "fixture repository changed while a snapshot payload was captured"
+            )
+        return digest.digest(), payload
+
+    @staticmethod
+    def _assert_same_file(fixture_file: _FixtureFile, observed: os.stat_result) -> None:
+        identity = (observed.st_dev, observed.st_ino)
+        expected_identity = (fixture_file.device, fixture_file.inode)
+        if (
+            identity != expected_identity
+            or observed.st_size != fixture_file.size
+            or observed.st_mode != fixture_file.stat_mode
+            or observed.st_mtime_ns != fixture_file.modified_ns
+            or observed.st_ctime_ns != fixture_file.changed_ns
+            or not stat.S_ISREG(observed.st_mode)
+        ):
+            raise RepositoryUpstreamError(
+                "fixture repository changed while its content snapshot was captured"
+            )

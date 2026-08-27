@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Protocol
@@ -11,6 +13,7 @@ from repopilot.models import (
     EvidenceCategory,
     GitHubRepositoryInput,
     InspectedRepository,
+    classify_evidence_path,
     validate_repository_path,
 )
 
@@ -75,6 +78,43 @@ class InspectedDocument:
     sha256: str
     content: str
 
+    def __post_init__(self) -> None:
+        self._validate_integrity()
+
+    def _validate_integrity(self) -> None:
+        if not isinstance(self.path, str):
+            raise ValueError("inspected document path must be a safe repository path")
+        try:
+            validate_repository_path(self.path)
+        except ValueError as exc:
+            raise ValueError("inspected document path must be a safe repository path") from exc
+
+        expected_category = classify_evidence_path(self.path)
+        if expected_category is None or self.category is not expected_category:
+            raise ValueError(
+                "inspected document category must match its canonical path classification"
+            )
+
+        if not isinstance(self.content, str):
+            raise ValueError("inspected document content must be UTF-8 text")
+        try:
+            payload = self.content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("inspected document content must be UTF-8 text") from exc
+
+        if (
+            not isinstance(self.size, int)
+            or isinstance(self.size, bool)
+            or self.size != len(payload)
+        ):
+            raise ValueError("inspected document size must match its UTF-8 byte length")
+
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        if not isinstance(self.sha256, str) or not hmac.compare_digest(
+            self.sha256, expected_sha256
+        ):
+            raise ValueError("inspected document sha256 must match its UTF-8 content")
+
 
 @dataclass(frozen=True, slots=True)
 class RepositorySnapshot:
@@ -84,6 +124,57 @@ class RepositorySnapshot:
     selection_truncated: bool
     limits: InspectionLimits
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, InspectedRepository):
+            raise ValueError("repository snapshot requires an inspected repository")
+        InspectedRepository.model_validate(self.repository)
+
+        if not isinstance(self.limits, InspectionLimits):
+            raise ValueError("repository snapshot requires inspection limits")
+        self.limits.__post_init__()
+        if not isinstance(self.selection_truncated, bool):
+            raise ValueError("repository snapshot selection_truncated must be a boolean")
+        if not isinstance(self.all_paths, tuple):
+            raise ValueError("repository snapshot all_paths must be an immutable tuple")
+        if not self.all_paths:
+            raise ValueError("repository snapshot must contain at least one repository path")
+
+        for path in self.all_paths:
+            if not isinstance(path, str):
+                raise ValueError("repository snapshot all_paths must contain safe repository paths")
+            try:
+                validate_repository_path(path)
+            except ValueError as exc:
+                raise ValueError(
+                    "repository snapshot all_paths must contain safe repository paths"
+                ) from exc
+        if len(self.all_paths) != len(set(self.all_paths)):
+            raise ValueError("repository snapshot all_paths must be unique")
+        if len(self.all_paths) > self.limits.max_tree_entries:
+            raise ValueError("repository snapshot all_paths exceed the inspection tree limit")
+
+        if not isinstance(self.documents, tuple):
+            raise ValueError("repository snapshot documents must be an immutable tuple")
+        if not self.documents:
+            raise ValueError("repository snapshot must contain at least one inspected document")
+        for document in self.documents:
+            if not isinstance(document, InspectedDocument):
+                raise ValueError("repository snapshot documents must contain inspected documents")
+            document._validate_integrity()
+
+        document_paths = tuple(document.path for document in self.documents)
+        if len(document_paths) != len(set(document_paths)):
+            raise ValueError("repository snapshot document paths must be unique")
+        all_path_set = set(self.all_paths)
+        if any(path not in all_path_set for path in document_paths):
+            raise ValueError("repository snapshot document paths must belong to all_paths")
+        if len(self.documents) > self.limits.max_selected_files:
+            raise ValueError("repository snapshot documents exceed the selected-file limit")
+        if any(document.size > self.limits.max_file_bytes for document in self.documents):
+            raise ValueError("repository snapshot document exceeds the file-byte limit")
+        if sum(document.size for document in self.documents) > self.limits.max_total_bytes:
+            raise ValueError("repository snapshot documents exceed the total-byte limit")
+
 
 class RepositoryInspector(Protocol):
     """Inspect one immutable repository snapshot without cloning or executing it."""
@@ -91,17 +182,6 @@ class RepositoryInspector(Protocol):
     async def inspect(self, repository: GitHubRepositoryInput) -> RepositorySnapshot: ...
 
 
-_PROJECT_CONFIG_NAMES = {
-    ".python-version",
-    "pipfile",
-    "pyproject.toml",
-    "requirements-dev.txt",
-    "requirements-test.txt",
-    "requirements.txt",
-    "setup.cfg",
-    "setup.py",
-}
-_TEST_CONFIG_NAMES = {"conftest.py", "noxfile.py", "pytest.ini", "tox.ini"}
 _CATEGORY_PRIORITY = {
     EvidenceCategory.README: 0,
     EvidenceCategory.PROJECT_CONFIG: 1,
@@ -122,40 +202,13 @@ def is_safe_repository_path(path: str) -> bool:
 def classify_path(path: str) -> EvidenceCategory | None:
     """Classify only files that can provide useful Python implementation evidence."""
 
-    pure = PurePosixPath(path)
-    parts = tuple(part.lower() for part in pure.parts)
-    name = pure.name.lower()
-
-    if len(parts) == 1 and (name == "readme" or name.startswith("readme.")):
-        return EvidenceCategory.README
-    if len(parts) == 1 and (name in _PROJECT_CONFIG_NAMES or name.startswith("requirements-")):
-        return EvidenceCategory.PROJECT_CONFIG
-    if name in _TEST_CONFIG_NAMES:
-        return EvidenceCategory.TEST_CONFIG
-    if (
-        len(parts) >= 3
-        and parts[0:2] == (".github", "workflows")
-        and pure.suffix.lower()
-        in {
-            ".yml",
-            ".yaml",
-        }
-    ):
-        return EvidenceCategory.TEST_CONFIG
-    if pure.suffix.lower() != ".py":
-        return None
-    if parts[0] in {"doc", "docs"} or name.startswith(("bench", "benchmark")):
-        return None
-    if "tests" in parts[:-1] or "test" in parts[:-1] or name.startswith("test_"):
-        return EvidenceCategory.TEST
-    return EvidenceCategory.SOURCE
+    return classify_evidence_path(path)
 
 
 def has_python_footprint(entries: list[TreeEntry]) -> bool:
     for entry in entries:
-        name = PurePosixPath(entry.path).name.lower()
         category = classify_path(entry.path)
-        if name in _PROJECT_CONFIG_NAMES or (
+        if category is EvidenceCategory.PROJECT_CONFIG or (
             entry.path.lower().endswith(".py") and category is not None
         ):
             return True
@@ -183,7 +236,8 @@ def select_entries(entries: list[TreeEntry], limits: InspectionLimits) -> Select
         key=lambda selected: (
             _CATEGORY_PRIORITY[selected.category],
             len(PurePosixPath(selected.entry.path).parts),
-            selected.entry.path.lower(),
+            selected.entry.path.casefold(),
+            selected.entry.path,
         )
     )
 

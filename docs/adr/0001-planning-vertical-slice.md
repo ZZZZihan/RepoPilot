@@ -16,13 +16,23 @@
 3. 仓库检查有硬性文件、字节、响应和超时上限；超出小仓库边界时明确失败。
 4. 生产 GitHub 适配器和固定根目录夹具适配器实现同一个 `RepositoryInspector` 接口，使该 seam 同时具备真实实现和测试实现。
 5. 第一版使用确定性规划器。计划的价值来自可复现结构和证据约束，而不是未经验证的模型输出。
-6. SQLite 是本地权威存储。计划使用 Pydantic Schema，并在构造、持久化和读取时校验。
-7. 状态机当前只有 `proposed → approved`；转换要求调用方提供期望版本。
-8. 不建立执行路由。后续执行与 PR 发布仅保留类型接口和契约文档。
+6. SQLite 是本地权威存储。计划在构造、持久化和读取时执行 Pydantic runtime 校验；
+   Schema endpoint 暴露结构性 JSON Schema 和 `x-repopilot-semantic-constraints` 清单，
+   但标准 JSON Schema 本身不执行 custom evidence/state validator。SQL 行的 plan ID、
+   Schema version、status/version 必须与文档 envelope 一致。
+7. canonical repository URL/owner/name/ref/tree 形成一个身份；创建与批准时间必须带时区、
+   规范化为 UTC，批准不能早于创建。
+8. 状态机只有无审批的 `proposed/version 1 → approved/version 2/from_version 1`；转换要求
+   调用方提供正确期望版本，其他 status/version/approval 组合均非法。
+9. 不建立执行路由。批准和 `verification_readiness` 只是 planning-only 信号；当前
+   `ImplementationPlan` 1.0 即使 approved/ready 也必须被未来执行与 PR 发布请求拒绝。
+   后续执行需要新的 ADR、execution-sealed 类型和真实 adapter。
 
 ## Consequences
 
 该切片可以在没有 GitHub 写权限、Docker 和模型密钥的情况下端到端验收，失败也能归因到输入、检查、规划、持久化或审批中的一个阶段。
 
-代价是计划仍是启发式初稿；当前没有认证，`approved_by` 只是声明；SQLite 也不是多用户生产数据库。这些限制必须在进入执行阶段前解决，不能因为接口已经存在而视为完成。
-
+代价是计划仍是启发式初稿；当前没有认证，`approved_by` 只是声明；SQLite 也不是多用户
+生产数据库。POSIX no-follow/owner/link/mode/inode/sidecar 门禁是静态路径 hardening，
+不声称防住恶意 same-UID rename/swap、完整 macOS ACL 或 non-POSIX 等价保证。这些限制
+必须在进入执行阶段前解决，不能因为接口已经存在而视为完成。

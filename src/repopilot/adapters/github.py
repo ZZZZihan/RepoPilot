@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import re
 from typing import Any
@@ -34,7 +35,8 @@ from repopilot.inspection import (
 )
 from repopilot.models import GitHubRepositoryInput, InspectedRepository
 
-_GIT_OBJECT_ID = re.compile(r"^[0-9a-f]{40,64}$")
+_GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_REGULAR_BLOB_MODES = {"100644", "100755"}
 
 
 class GitHubRepositoryInspector:
@@ -63,6 +65,7 @@ class GitHubRepositoryInspector:
     async def _inspect(self, repository: GitHubRepositoryInput) -> RepositorySnapshot:
         headers = {
             "Accept": "application/vnd.github+json",
+            "Accept-Encoding": "identity",
             "User-Agent": "RepoPilot/0.1.0",
             "X-GitHub-Api-Version": self._api_version,
         }
@@ -108,10 +111,10 @@ class GitHubRepositoryInspector:
             tree_sha = tree.get("sha")
             if not isinstance(raw_tree, list) or not isinstance(tree_sha, str):
                 raise RepositoryUpstreamError("GitHub returned an invalid repository tree")
-            if not _GIT_OBJECT_ID.fullmatch(tree_sha.lower()):
+            if not _GIT_OBJECT_ID.fullmatch(tree_sha):
                 raise RepositoryUpstreamError("GitHub returned an invalid tree identifier")
 
-            entries = self._parse_entries(raw_tree)
+            entries = self._parse_entries(raw_tree, oid_length=len(tree_sha))
             if len(entries) > self._limits.max_tree_entries:
                 raise InspectionLimitExceededError(
                     f"repository has more than {self._limits.max_tree_entries} files"
@@ -165,8 +168,9 @@ class GitHubRepositoryInspector:
                 limits=self._limits,
             )
 
-    def _parse_entries(self, raw_tree: list[Any]) -> list[TreeEntry]:
+    def _parse_entries(self, raw_tree: list[Any], *, oid_length: int) -> list[TreeEntry]:
         entries: list[TreeEntry] = []
+        seen_paths: set[str] = set()
         for item in raw_tree:
             if not isinstance(item, dict):
                 raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
@@ -178,16 +182,28 @@ class GitHubRepositoryInspector:
             path = item.get("path")
             size = item.get("size")
             blob_sha = item.get("sha")
+            mode = item.get("mode")
             if not isinstance(path, str) or not is_safe_repository_path(path):
                 raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
             if not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
-            if not isinstance(blob_sha, str) or not _GIT_OBJECT_ID.fullmatch(blob_sha.lower()):
+            if (
+                not isinstance(blob_sha, str)
+                or not _GIT_OBJECT_ID.fullmatch(blob_sha)
+                or len(blob_sha) != oid_length
+            ):
                 raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
+            if not isinstance(mode, str) or mode not in _REGULAR_BLOB_MODES:
+                raise RepositoryUpstreamError(
+                    "GitHub returned a non-regular or malformed blob tree entry"
+                )
+            if path in seen_paths:
+                raise RepositoryUpstreamError("GitHub returned a duplicate blob tree path")
+            seen_paths.add(path)
             entries.append(TreeEntry(path=path, size=size, blob_sha=blob_sha.lower()))
             if len(entries) > self._limits.max_tree_entries:
                 break
-        entries.sort(key=lambda entry: entry.path.lower())
+        entries.sort(key=lambda entry: (entry.path.casefold(), entry.path))
         return entries
 
     async def _fetch_document(
@@ -200,15 +216,28 @@ class GitHubRepositoryInspector:
         blob_sha = selected.entry.blob_sha
         if blob_sha is None:
             raise RepositoryUpstreamError("GitHub tree entry did not include a blob identifier")
-        max_blob_response = min(
-            (self._limits.max_file_bytes * 4 // 3) + 16 * 1024,
-            self._limits.max_response_bytes,
-        )
         blob = await self._get_json(
             client,
             f"/repos/{owner}/{name}/git/blobs/{blob_sha}",
-            max_bytes=max_blob_response,
+            max_bytes=self._limits.max_response_bytes,
         )
+        response_sha = blob.get("sha")
+        if (
+            not isinstance(response_sha, str)
+            or not _GIT_OBJECT_ID.fullmatch(response_sha)
+            or response_sha.lower() != blob_sha
+        ):
+            raise RepositoryUpstreamError(
+                "GitHub blob response did not match its requested object identifier"
+            )
+        response_size = blob.get("size")
+        if (
+            not isinstance(response_size, int)
+            or isinstance(response_size, bool)
+            or response_size < 0
+            or response_size != selected.entry.size
+        ):
+            raise RepositoryUpstreamError("GitHub blob response did not match its tree entry size")
         if blob.get("encoding") != "base64" or not isinstance(blob.get("content"), str):
             raise RepositoryUpstreamError("GitHub returned an unsupported blob encoding")
         try:
@@ -220,8 +249,22 @@ class GitHubRepositoryInspector:
             raise InspectionLimitExceededError(
                 "GitHub blob exceeded the configured file byte limit"
             )
-        if selected.entry.size != len(payload):
-            raise RepositoryUpstreamError("GitHub blob payload did not match its tree entry size")
+        if response_size != len(payload):
+            raise RepositoryUpstreamError(
+                "GitHub blob payload did not match its declared response size"
+            )
+        object_payload = f"blob {len(payload)}\0".encode("ascii") + payload
+        if len(blob_sha) == 40:
+            content_object_id = hashlib.sha1(  # noqa: S324 - Git object identity is SHA-1.
+                object_payload,
+                usedforsecurity=False,
+            ).hexdigest()
+        else:
+            content_object_id = hashlib.sha256(object_payload).hexdigest()
+        if not hmac.compare_digest(content_object_id, blob_sha):
+            raise RepositoryUpstreamError(
+                "GitHub blob content did not match its requested object identifier"
+            )
         try:
             content = payload.decode("utf-8")
         except UnicodeDecodeError:
@@ -245,13 +288,18 @@ class GitHubRepositoryInspector:
         try:
             async with client.stream("GET", path, params=params) as response:
                 self._raise_for_status(response)
+                content_encoding = response.headers.get("content-encoding", "identity")
+                if content_encoding.strip().casefold() not in {"", "identity"}:
+                    raise RepositoryUpstreamError(
+                        "GitHub returned an unsupported response content encoding"
+                    )
                 payload = bytearray()
                 async for chunk in response.aiter_bytes():
-                    payload.extend(chunk)
-                    if len(payload) > max_bytes:
+                    if len(chunk) > max_bytes - len(payload):
                         raise InspectionLimitExceededError(
                             "GitHub response exceeded the configured byte limit"
                         )
+                    payload.extend(chunk)
         except httpx.TimeoutException as exc:
             raise RepositoryTimeoutError("GitHub inspection timed out") from exc
         except httpx.RequestError as exc:

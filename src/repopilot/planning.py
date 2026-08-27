@@ -3263,6 +3263,7 @@ class PlanBuilder:
         return tuple(references)
 
     @classmethod
+    @lru_cache(maxsize=16)
     def _bare_reference_segments(cls, value: str) -> tuple[tuple[int, int], ...]:
         segments: list[tuple[int, int]] = []
         for base in _BARE_TOKEN_SEGMENT.finditer(value):
@@ -5171,6 +5172,7 @@ class PlanBuilder:
         return False
 
     @classmethod
+    @lru_cache(maxsize=32)
     def _semantic_clause_separator_is_recognized(cls, left: str, right: str) -> bool:
         """Recognize a hard semantic seam without splitting an ordinary filename."""
 
@@ -5691,6 +5693,7 @@ class PlanBuilder:
         return False
 
     @staticmethod
+    @lru_cache(maxsize=64)
     def _reference_candidate(value: str) -> str | None:
         candidate = value.strip()
         if any(character.isspace() and character not in " \t" for character in candidate):

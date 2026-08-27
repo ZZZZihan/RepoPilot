@@ -260,6 +260,7 @@ _REFERENCE_INVALID_SUFFIXES = (
 )
 _MAX_REFERENCE_INVALID_SUFFIX_LENGTH = max(map(len, _REFERENCE_INVALID_SUFFIXES))
 _MAX_PATH_ACTION_CONTEXT = 256
+_MAX_CACHED_OPAQUE_TOKEN_LENGTH = 512
 _COMPACT_PATH_SIGIL = "@"
 _CJK_BARE_PROSE_PREFIXES = (
     "中",
@@ -2981,6 +2982,8 @@ class PlanBuilder:
         protected_spans.begin_phase()
         wrapper_spans: list[tuple[int, int, int, int]] = []
         for opener, closer in _REFERENCE_WRAPPERS:
+            if opener not in value or closer not in value:
+                continue
             wrapper_spans.extend(cls._wrapper_spans(value, opener, closer))
         token_index = 0
         for start, content_start, end, span_end in sorted(wrapper_spans):
@@ -4033,6 +4036,17 @@ class PlanBuilder:
 
     @classmethod
     def _reference_context_boundary(cls, value: str) -> int:
+        if len(value) <= _MAX_PATH_ACTION_CONTEXT:
+            return cls._cached_reference_context_boundary(value)
+        return cls._uncached_reference_context_boundary(value)
+
+    @classmethod
+    @lru_cache(maxsize=64)
+    def _cached_reference_context_boundary(cls, value: str) -> int:
+        return cls._uncached_reference_context_boundary(value)
+
+    @classmethod
+    def _uncached_reference_context_boundary(cls, value: str) -> int:
         cjk_boundary = max(
             (value.rfind(boundary) for boundary in _REFERENCE_CONTEXT_BOUNDARIES),
             default=-1,
@@ -5423,6 +5437,17 @@ class PlanBuilder:
     def _has_opaque_same_token_reference_continuation(cls, value: str) -> bool:
         """Reject suffix/query fragments that would otherwise escape their envelope."""
 
+        if len(value) <= _MAX_CACHED_OPAQUE_TOKEN_LENGTH:
+            return cls._cached_opaque_same_token_reference_continuation(value)
+        return cls._uncached_opaque_same_token_reference_continuation(value)
+
+    @classmethod
+    @lru_cache(maxsize=16)
+    def _cached_opaque_same_token_reference_continuation(cls, value: str) -> bool:
+        return cls._uncached_opaque_same_token_reference_continuation(value)
+
+    @classmethod
+    def _uncached_opaque_same_token_reference_continuation(cls, value: str) -> bool:
         saw_supported_suffix = False
         value_length = len(value)
         checked_punctuation_run_end = 0

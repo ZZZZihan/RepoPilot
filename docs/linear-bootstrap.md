@@ -1,0 +1,522 @@
+# Linear bootstrap for RepoPilot
+
+Status: bootstrap synced to Linear on 2026-08-24; live state remains in Linear
+
+## Bootstrap sync record — historical snapshot
+
+- Project: [RepoPilot — Verified Issue-to-PR Pilot](https://linear.app/colife/project/repopilot-verified-issue-to-pr-pilot-bf73022b2c42)
+- Team: CoLife (`COL`)
+- Lead and initial assignee: Zihan Xu (`zihan4602`)
+- Priority and state: High, In Progress
+- Milestones: M0, M1a, M1b and M2 created without invented target dates
+- [COL-5](https://linear.app/colife/issue/COL-5/m0-01-preserve-and-reconstruct-the-audited-planning-slice): Done
+- [COL-6](https://linear.app/colife/issue/COL-6/m0-02-harden-inspection-failure-contracts-and-dependency-provenance): Done, blocked by COL-5
+- [COL-9](https://linear.app/colife/issue/COL-9/m0-02b-seal-issue-aware-semantic-planning-baseline): In Progress, related to COL-6 and blocking COL-7
+- [COL-7](https://linear.app/colife/issue/COL-7/m0-03-seal-reproducible-http-and-persistence-acceptance): Todo, blocked by COL-6 and COL-9
+- [COL-8](https://linear.app/colife/issue/COL-8/m0-04-publish-planning-baseline-01-with-hosted-ci-evidence): Todo, blocked by COL-7
+
+This section records the state immediately after bootstrap and is not a live status mirror.
+Linear is authoritative for current status, dependencies and completion evidence. The graph and
+issue templates below are also historical bootstrap snapshots retained for version review; their
+state/dependency fields and unchecked acceptance boxes are not live.
+
+## Project
+
+Name: RepoPilot — Verified Issue-to-PR Pilot
+
+Summary: Prove that a bounded Python Issue can become a sealed, isolated and objectively
+verified patch candidate before investing in the full platform.
+
+Description:
+
+> RepoPilot turns a repository snapshot and Issue into an evidence-backed plan, seals the
+> approved scope, executes a bounded patch in isolation, and produces machine-verifiable
+> evidence. Linear owns milestones, issues, priorities, statuses and dependencies.
+> GitHub owns branches, commits, PRs, reviews and CI. Repository documents own domain
+> language, architecture decisions and acceptance contracts.
+
+Project priority: High
+
+Target dates: unset until M0 is estimated from a recovered and verified baseline.
+
+## Workflow semantics
+
+Read the team's existing Linear statuses before creating or renaming workflow states.
+Map their semantics as follows:
+
+| Canonical state | Meaning |
+| --- | --- |
+| needs-triage | Maintainer decision required |
+| needs-info | Blocked on specific missing information |
+| ready-for-agent | Complete Agent Brief and objective acceptance |
+| in-progress | One owner is actively working |
+| in-review | PR or evidence is awaiting human review |
+| done | Acceptance and required evidence are complete |
+| canceled | Explicitly stopped or superseded |
+
+Each issue has exactly one category:
+
+- enhancement
+- bug
+
+Milestones carry the gate, so gate labels are not created. Add area labels only when the
+existing workspace lacks an equivalent:
+
+- area:planning
+- area:execution
+- area:eval
+- area:security
+- area:docs
+
+Do not create dates, estimates, custom statuses or labels until the team configuration is
+read. Do not duplicate GitHub CI status in a Linear field; link the check or PR.
+
+## Milestones
+
+### M0 Planning Baseline Sealed
+
+Recover, inspect and publish a reproducible planning-and-approval slice. Exit only with one
+clean exact commit/tree, a cold local gate, a two-stage snapshot real-process persistence smoke,
+a security diff review and hosted CI observed green on that same commit. Publish a reviewable
+PR; do not merge automatically.
+
+### M1a Execution Contract Proven
+
+Prove a deterministic Patch can move through seal validation, isolated workspace,
+bounded Policy, verification, artifacts and cleanup. A real model is intentionally out of
+scope.
+
+### M1b First Verified Patch Candidate
+
+Replace the deterministic Patch Producer with one model and four structured tools.
+Complete one genuine baseline-failing Python issue with no more than one repair.
+
+### M2 Pilot Go / Narrow / Stop Decision
+
+Freeze ten tasks, compare baselines, classify failures and apply the pre-declared decision
+threshold.
+
+## Historical bootstrap dependency graph — not live
+
+~~~text
+M0-01 Recover candidate baseline -> M0-02 Harden contracts and dependency provenance --+
+M0-02b Seal Issue-aware semantic baseline --------------------------------------------+-> M0-03 Reproduce HTTP and persistence acceptance
+                                                                                           -> M0-04 Publish baseline PR and hosted CI evidence
+~~~
+
+## M0-01 — Preserve and reconstruct the audited Planning Slice
+
+Priority: High
+
+Milestone: M0 Planning Baseline Sealed
+
+Category: enhancement
+
+Bootstrap state (historical; not live): ready-for-agent
+
+Description:
+
+> *This was generated by AI during triage.*
+
+## Agent Brief
+
+**Category:** enhancement
+
+**Summary:** Preserve the recoverable Planning Slice as an isolated Git baseline and
+produce evidence for whether it should become RepoPilot 0.1.
+
+**Current behavior:**
+
+The authoritative main branch contains only initialization documents. A previously
+audited implementation exists as an unreferenced Git tree object, so it can be inspected
+but is not protected by a branch, commit or remote CI run.
+
+**Desired behavior:**
+
+The candidate implementation is preserved under a recovery commit and codex-prefixed
+branch without changing main. A clean checkout is inspected for secrets and dependency
+provenance, installed from its lockfile and run through its declared local quality gate.
+The outcome states whether to continue from the candidate, narrow it or archive it.
+
+**Key interfaces:**
+
+- Git baseline identity — a named commit and branch must protect the recovered tree.
+- Planning HTTP contract — the recovered behavior must remain planning-only until its
+  documented acceptance is reproduced.
+- Local quality contract — dependency sync and the repository's aggregate check command
+  must be reproducible from a clean checkout.
+
+**Bootstrap acceptance criteria (unchecked snapshot; not live):**
+
+- [ ] The candidate tree is referenced by a recovery commit and codex-prefixed branch.
+- [ ] main and origin/main remain unchanged during recovery.
+- [ ] The recovered file inventory matches the candidate tree.
+- [ ] A secret scan reports filenames and classifications without printing secret values.
+- [ ] Direct dependencies, lockfile source and Python version are reviewed.
+- [ ] Locked dependency installation completes from a clean checkout.
+- [ ] The aggregate local quality command records versions, exit status and test count.
+- [ ] A short recommendation records continue, narrow or archive with evidence.
+- [ ] The final recovery branch status is clean.
+
+**Out of scope:**
+
+- Merging or pushing without human review.
+- Adding code execution, arbitrary shell, model calls, sandboxing or PR publication.
+- Refactoring the recovered implementation before its baseline is reproduced.
+
+## M0-02 — Harden inspection failure contracts and dependency provenance
+
+Priority: High
+
+Milestone: M0 Planning Baseline Sealed
+
+Category: enhancement
+
+Bootstrap state (historical; not live): ready-for-agent
+
+Bootstrap dependency (historical; not live) — blocked by: M0-01
+
+Description:
+
+> *This was generated by AI during triage.*
+
+## Agent Brief
+
+**Category:** enhancement
+
+**Summary:** Prove that bounded repository inspection and dependency installation fail
+safely under important upstream and resource-limit errors.
+
+**Current behavior:**
+
+The candidate slice has a bounded GitHub repository adapter and a locked development
+environment, but the audit identified insufficient negative-path evidence and at least
+one direct development dependency without a demonstrated import.
+
+**Desired behavior:**
+
+Repository inspection has deterministic tests for upstream truncation, response limits,
+rate limiting, timeouts and credential-host boundaries. Every direct dependency and
+package source is either justified or removed, and the lockfile remains reproducible.
+
+**Key interfaces:**
+
+- RepositoryInspector — converts bounded repository input into a validated snapshot.
+- GitHub adapter error contract — maps upstream and size failures into stable local
+  errors without leaking credentials.
+- Dependency manifest and lockfile — define the reproducible development environment.
+
+**Bootstrap acceptance criteria (unchecked snapshot; not live):**
+
+- [ ] A truncated repository tree is rejected or explicitly surfaced as incomplete.
+- [ ] Tree, response, blob and aggregate-content limits have negative tests.
+- [ ] Rate limit and timeout failures map to stable error categories.
+- [ ] Authentication material is never sent to a non-approved host.
+- [ ] Malformed JSON, base64 and non-text input fail predictably.
+- [ ] Every direct dependency has a source usage or documented rationale.
+- [ ] The lockfile validates after dependency changes.
+- [ ] The aggregate local quality command passes.
+
+**Out of scope:**
+
+- Semantic code search, embeddings or RAG.
+- Repository clone, Patch application or execution.
+- Raising limits to make tests pass.
+
+## M0-02b — Seal Issue-aware semantic planning baseline
+
+Priority: High
+
+Milestone: M0 Planning Baseline Sealed
+
+Category: enhancement
+
+Bootstrap state (historical; not live): in-progress
+
+Bootstrap relation (historical; not live) — related to: M0-02
+
+Bootstrap relation (historical; not live) — blocks: M0-03
+
+Description:
+
+> *This was generated by AI during triage.*
+
+## Agent Brief
+
+**Category:** enhancement
+
+**Summary:** Make the M0 golden Issue and deterministic planner prove a real,
+Issue-aware delta instead of accepting a pre-satisfied no-op.
+
+**Current behavior:**
+
+The fixture already raised `ZeroDivisionError` and already contained a zero-divisor
+regression test, while the original golden Issue only asked for a clear error and a test.
+The original plan could therefore look valid without identifying an observable change;
+generic vocabulary could also select an extra `__init__.py`, and evidence windows pointed
+to the first declaration instead of the relevant behavior.
+
+**Desired behavior:**
+
+The golden Issue requests a precise type-and-message contract that the fixture does not
+already satisfy. The plan selects only the necessary implementation and test paths,
+preserves the observable delta, and cites evidence that covers the current behavior.
+Explicit path, filename and symbol matches outrank generic vocabulary noise.
+
+**Bootstrap acceptance criteria (unchecked snapshot; not live):**
+
+- [ ] The golden Issue requires `ValueError("divisor must not be zero")` for a zero divisor.
+- [ ] The fixture baseline does not already satisfy that exact contract.
+- [ ] Implementation and test references are exact, necessary paths.
+- [ ] Analysis includes relevant source plus the existing test or README contract.
+- [ ] Evidence windows cover the Issue-relevant behavior.
+- [ ] A vocabulary-heavy distractor cannot outrank an explicitly named file or symbol.
+- [ ] Mutating the Issue to another symbol changes the selected source and test.
+- [ ] The aggregate local quality command passes on the integrated commit.
+
+**Out of scope:**
+
+- A general proof that arbitrary Issues are already satisfied.
+- Embeddings, RAG, model calls or repository execution.
+- Patch generation or Pull Request creation.
+
+## M0-03 — Seal reproducible HTTP and persistence acceptance
+
+Priority: High
+
+Milestone: M0 Planning Baseline Sealed
+
+Category: enhancement
+
+Bootstrap state (historical; not live): ready-for-agent
+
+Bootstrap dependency (historical; not live) — blocked by: M0-02 and M0-02b
+
+Description:
+
+> *This was generated by AI during triage.*
+
+## Agent Brief
+
+**Category:** enhancement
+
+**Summary:** Reproduce the complete planning-and-approval path in a real application
+process and preserve the acceptance evidence.
+
+**Current behavior:**
+
+The candidate contains an HTTP application, SQLite plan persistence and automated tests.
+Historical smoke evidence is not sufficient to certify the newly preserved Git baseline.
+
+**Desired behavior:**
+
+The harness does not execute from a mutable live checkout. A bootstrap validates the actual
+repository top-level, captures a clean exact commit/tree and materializes a bounded source
+snapshot from that commit. An inner orchestrator independently re-materializes the claimed
+commit and matches the snapshot manifest before two real Uvicorn processes use a temporary,
+permission-restricted SQLite database to create, read and approve a plan. After process restart
+the approved record and version remain readable. Post-run manifest and live identity checks bind
+all runtime evidence to the exact commit and snapshot used.
+
+**Key interfaces:**
+
+- Planning API — health, create, read, schema and approval endpoints.
+- Approval transition — proposed version one to approved version two with optimistic
+  concurrency.
+- Persistent plan store — validated state must survive application reconstruction and
+  process restart.
+- Source identity bootstrap — validate repository top-level, exact commit/tree and clean state.
+- Snapshot manifest — bind the bounded Git archive, manifest hash, file count, harness hash and
+  lockfile hash.
+- POSIX SQLite store — freeze the database path and enforce owner/type/link/mode, sidecar and
+  actual WAL contracts.
+
+**Bootstrap acceptance criteria (unchecked snapshot; not live):**
+
+- [ ] The actual repository top-level, exact commit/tree and tracked/untracked clean state are
+  captured before materialization.
+- [ ] Unsafe archive members, an unrelated clean repository, forged commit/tree claims and
+  contaminated Git/Python/token environments fail closed.
+- [ ] An independent re-archive of the claimed commit matches the snapshot manifest before
+  either Uvicorn child starts.
+- [ ] Two real Uvicorn children start only from the immutable snapshot, become healthy and exit
+  through the bounded cleanup path.
+- [ ] The snapshot orchestrator timeout/output-limit/original-group-residual path proves its
+  original POSIX process group is empty after bounded TERM/KILL cleanup; this does not cover a
+  descendant that deliberately creates a new session with `setsid()`.
+- [ ] Plan creation returns proposed version one.
+- [ ] Every referenced file resolves to plan evidence.
+- [ ] Existing file actions have same-path evidence; create actions cannot conflict with an
+  observed path.
+- [ ] Verification intents are evidence-backed and unexecuted;
+  `verification_readiness="ready"` requires a pytest intent, while `needs_human_input` remains
+  non-executable planning output.
+- [ ] Correct expected version produces approved version two.
+- [ ] Stale and duplicate approval are rejected.
+- [ ] Restarting the process preserves the approved record.
+- [ ] On POSIX, the frozen database target, final parent, database, `-journal`, `-wal` and `-shm`
+  satisfy the documented owner/type/link/mode contract and SQLite actually reports WAL.
+- [ ] The post-run snapshot manifest and live commit/tree/clean identity remain unchanged.
+- [ ] The Evidence Capsule records source commit/tree, manifest hash, file count, harness hash and
+  lockfile hash.
+- [ ] Managed direct children, members remaining in the original POSIX process group, observed
+  ports, temporary database and snapshot are cleaned up.
+- [ ] Any live GitHub smoke records date, repository, ref and tree SHA.
+- [ ] No GitHub write endpoint, host shell execution or credential leak occurs.
+- [ ] The aggregate local quality command remains green.
+
+**Out of scope:**
+
+- Treating the local approved-by label as authenticated identity.
+- Triggering execution from approval.
+- Importing or executing the fixed-root fixture repository.
+- Defending against a malicious same-UID pathname swap, complete macOS ACL analysis or
+  non-POSIX-equivalent inode/link guarantees.
+- Production tenancy, PostgreSQL or deployment.
+
+## M0-04 — Publish Planning Baseline 0.1 with hosted CI evidence
+
+Priority: High
+
+Milestone: M0 Planning Baseline Sealed
+
+Category: enhancement
+
+Bootstrap state (historical; not live): ready-for-agent
+
+Bootstrap dependency (historical; not live) — blocked by: M0-03
+
+Description:
+
+> *This was generated by AI during triage.*
+
+## Agent Brief
+
+**Category:** enhancement
+
+**Summary:** Deliver the reproduced Planning Slice through a reviewable GitHub PR and
+record the hosted CI result.
+
+**Current behavior:**
+
+The remote repository contains only initialization documents. The candidate
+implementation, CI workflow and verification evidence are not part of an observed remote
+run.
+
+**Desired behavior:**
+
+A focused PR contains the recovered and verified Planning Slice, synchronized documentation and
+CI workflow. GitHub Actions executes the same aggregate quality contract used locally on the
+exact final commit. Linear receives links to the PR, hosted check/run and that final SHA. The PR
+remains open for human review and is not automatically merged.
+
+**Key interfaces:**
+
+- Git branch and commit history — preserve a reviewable recovery path.
+- GitHub Actions — execute the repository's aggregate quality command from the lockfile.
+- PR and Linear Evidence Capsule — record the exact external publication evidence; repository
+  development-status documents retain only contracts and explicitly labelled history.
+
+**Bootstrap acceptance criteria (unchecked snapshot; not live):**
+
+- [ ] The PR contains no unrelated files or secrets.
+- [ ] Documentation matches the implemented scope and known limitations.
+- [ ] The CI workflow installs from the committed lockfile.
+- [ ] Hosted format, lint, type, test, smoke and build checks are observed green on the exact
+  final SHA.
+- [ ] The PR records the cold local gate, snapshot smoke, security diff base/full head SHAs and
+  exact commit SHA.
+- [ ] The corresponding Linear issue links the PR and hosted run, recording workflow/job check
+  name (`ci` / `check` for this workflow), run URL or ID, event, tested SHA and conclusion.
+- [ ] Human approval is required before merge.
+- [ ] The final local worktree is clean.
+
+**Out of scope:**
+
+- Automatic merge.
+- Product execution, GitHub App write permissions or PR creation by RepoPilot.
+- Hosted application deployment.
+
+## Current M0-03/M0-04 executable-contract clarification — 2026-08-27
+
+The unchecked issue templates above remain the historical 2026-08-24 bootstrap record; this
+clarification does not rewrite their historical state. Current COL-7/COL-8 acceptance and their
+external Evidence Capsules must use the executable contracts below, with
+[architecture](architecture.md) and [acceptance](product/acceptance.md) as the detailed sources.
+
+For M0-03:
+
+- the Schema route exposes structural JSON Schema plus
+  `x-repopilot-semantic-constraints`; Pydantic runtime validators separately enforce repository
+  identity, evidence/action/readiness semantics, UTC times, the unique
+  `proposed/version 1 → approved/version 2/from_version 1` transition and the
+  SQL-row/document storage envelope;
+- Git commands have a 15-second deadline, 1 MiB metadata or 32 MiB archive stdout and 256 KiB
+  stderr; archive/member/file/total/read ceilings are respectively 32 MiB, 4,096, 8 MiB,
+  24 MiB and 64 KiB chunks;
+- the snapshot orchestrator has 1 MiB/256 KiB stdout/stderr and a 210-second subprocess deadline
+  (not a total `make smoke-m0` deadline); HTTP requests are 5 seconds, Uvicorn ready/health and
+  graceful/TERM/KILL/observed-port waits are 10 seconds each, and original-group TERM/KILL waits
+  are 2/5 seconds;
+- runtime children receive only the exact minimal environment plus snapshot `PYTHONPATH`; Git
+  children receive only the fixed no-credential environment, and Uvicorn stdout/stderr is
+  discarded;
+- containment is exactly
+  `managed_direct_children_original_posix_process_group_and_observed_ports`, not a guarantee for
+  descendants that deliberately escape through `setsid()`;
+- POSIX database and live sidecars use lstat/O_NOFOLLOW/euid/regular/nlink=1/0600/inode checks;
+  after graceful stops all sidecars are absent, the database header proves WAL, immutable
+  read-only integrity is `ok`, and exactly one approved/version-two record remains.
+
+For M0-04:
+
+- cold local and `ci`/`check` first run locked `uv sync --no-install-project` for
+  `hatchling`/dependencies, then locked `uv sync --no-build-isolation` for the project; distribution
+  build uses `uv build --no-build-isolation` and does not independently resolve the backend;
+- hosted checkout explicitly targets the event's PR head SHA, verifies actual `HEAD`, records
+  `HEAD^{tree}` and requires a clean worktree;
+- PR and Linear record the full security base/head SHA, exact candidate commit/tree, cold gate,
+  smoke Capsule, workflow/job, run URL or ID, event, tested SHA and observed-green conclusion;
+  final candidate SHA remains external to its own tree, and M0 never merges automatically.
+
+## Later backlog skeleton
+
+Create these detailed issues only as the prior gate nears completion.
+
+### M1a
+
+- Record the execution authority ADR and threat model.
+- Introduce execution schema lineage and reject old planning-only approvals.
+- Freeze one trusted baseline-failing benchmark with hidden acceptance.
+- Implement clean workspace lifecycle and structured path/argv Policy.
+- Implement deterministic Patch Producer, Evidence Capsule and E2E contract.
+- Time-box the Vercel Sandbox adapter spike behind the execution seam.
+
+### M1b
+
+- Select one model using current official documentation and a fixed budget.
+- Implement four structured model-visible tools.
+- Implement initial-patch-plus-one-repair state machine.
+- Persist model, prompt, tool, token, timeout and stop-reason Trace.
+- Produce and independently verify the first genuine Patch Candidate.
+
+### M2
+
+- Freeze ten seeded tasks and hidden acceptance before execution.
+- Implement the evaluation runner, metrics and failure taxonomy.
+- Run Baseline A, Baseline B and RepoPilot under the same conditions.
+- Publish the Go, Narrow or Stop decision without replacing failed tasks.
+
+## Sync procedure
+
+When Linear is connected:
+
+1. Read the accessible workspace, team, existing statuses, labels and projects.
+2. Reuse an existing RepoPilot project if it is clearly the same project.
+3. Create or update the project description.
+4. Create the four milestones in order.
+5. Create the initial four M0 issues as one logical batch.
+6. Add dependency relations after all initial issue identifiers exist; add newly discovered
+   M0 blockers as separate issues instead of silently expanding a completed brief.
+7. Do not create M1a, M1b or M2 detailed issues yet.
+8. Summarize created identifiers and links.

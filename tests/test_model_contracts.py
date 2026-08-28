@@ -223,6 +223,16 @@ def test_request_identity_integers_reject_coercible_non_integers(value: object) 
         IssueInput(number=value, title="Strict issue identity", body="")  # type: ignore[arg-type]
 
 
+def test_issue_title_preserves_internal_whitespace() -> None:
+    issue = IssueInput(
+        number=1,
+        title="Update `src/package/double  space.py`",
+        body="",
+    )
+
+    assert issue.title == "Update `src/package/double  space.py`"
+
+
 @pytest.mark.parametrize("tree_sha", ["a" * 40, "b" * 64])
 def test_inspected_repository_accepts_exact_git_object_id_lengths(tree_sha: str) -> None:
     repository = InspectedRepository(

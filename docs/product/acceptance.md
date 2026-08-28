@@ -45,6 +45,8 @@
 - Issue URL 与仓库不一致时返回 `422`；
 - 非 GitHub 主机的仓库 URL 在网络请求前返回 `422`；
 - 固定根目录适配器超过文件树上限时停止并报告 `413` 对应错误；
+- 文件树上限必须统计 regular file、目录、符号链接和子模块；两种检查器必须保留后
+  三类 namespace claim，不能因它们不是可读证据文件而把已占用路径报告为不存在；
 - GitHub 适配器只接受 `2xx`，将 `403` 配额耗尽、`429` 和超时映射为稳定错误，
   不跟随重定向，也不会把认证材料发送给非固定上游主机；
 - metadata/tree/blob 响应、文件树、单 blob、内容总量和文件选取均受独立上限约束；
@@ -70,11 +72,14 @@
 - 识别出的显式路径若已存在于 `tree/all_paths`，只有对应 document 已取证时才允许
   `MODIFY`；同类别其他文件的 evidence 不能代替它；
 - 已存在的显式路径未取证时，规划 API 必须 fail closed 为 `413`、错误码
-  `inspection_limit_exceeded`；tree 中不存在的显式路径必须按原路径生成 `CREATE`；
+  `inspection_limit_exceeded`；regular-file tree 中不存在的显式路径只有在精确位置未被
+  目录、符号链接或子模块占用，且祖先路径不是 regular file、符号链接或子模块时，
+  才能按原路径生成 `CREATE`，否则返回 `422 conflicting_issue_path`；
 - 同类别多个显式路径必须全部完成 missing/ambiguous evidence 审计；M0 只输出首目标，
   但必须记录 deferred multi-file 风险，后续路径不得绕过 fail-closed 门禁；
-- 没有显式路径时，只有文件树本身确实没有对应类别才允许推断常规 `CREATE` 路径；
-  不得用推断的新文件掩盖受界检查缺失；
+- 没有显式路径时，只有文件树本身确实没有对应类别才允许推断由合法 Python 标识符
+  组成的常规 `CREATE` 路径，并执行同一 namespace 冲突检查；不得用推断的新文件掩盖
+  受界检查缺失；
 - smoke bootstrap 对实际 repository top-level、精确 commit/tree 和 clean 状态 fail
   closed；无关 clean repository、伪造 tree、环境污染和不安全 archive member 不能
   冒充候选来源；

@@ -18,7 +18,7 @@ FastAPI interface
 
 两种适配器共享前四项选择限制，GitHub 适配器另有响应与时间限制。下列数值是默认配置，服务端可在 `Settings` 规定的边界内通过 `REPOPILOT_*` 环境变量调整：
 
-- 最多查看 2,000 个文件条目；
+- 最多查看 2,000 个 tree 条目（regular file、目录、符号链接和子模块都计数）；
 - 最多选取 32 个证据文件；
 - 单文件最多 64 KiB；
 - 选取内容合计最多 384 KiB；
@@ -58,11 +58,14 @@ ASCII 或非 ASCII 字符），会 fail closed 为 `422 ambiguous_issue_path`；
 用空格分隔前缀与 operand，用 `@path` 紧凑标签显式指定 operand，或用
 wrapper/`路径:` 显式界定完整 literal path。紧凑标签在长度上限附近保持替换后的
 title/body 不增长，同时完整保留路径后的动作文本。
-路径采用三态解析：tree 中存在且已取证时 `MODIFY`；tree 中存在但未取证时 fail
-closed 为 `413 inspection_limit_exceeded`；tree 中不存在时按显式路径 `CREATE`。
-没有显式路径时，只有文件树本身确实没有对应类别才推断常规 `CREATE`，不会用
-新文件掩盖受界检查缺失。同一类别的额外显式路径也必须先完成 missing/ambiguous
-evidence 审计；M0 仍只输出首目标，并把其余路径记录为 deferred multi-file 风险。
+路径采用 fail-closed 解析：regular-file tree 中存在且已取证时 `MODIFY`；存在但未取证
+时返回 `413 inspection_limit_exceeded`；不存在时还要检查完整 tree namespace。目标精确
+位置若已是目录、符号链接或子模块，或任一祖先已是 regular file、符号链接或子模块，
+返回 `422 conflicting_issue_path`，只有可实际创建的显式路径才生成 `CREATE`。没有显式
+路径时，只有文件树本身确实没有对应类别才推断由合法 Python 标识符组成的常规
+`CREATE`，并执行相同 namespace 检查，不会用新文件掩盖受界检查缺失。同一类别的
+额外显式路径也必须先完成 missing/ambiguous evidence 审计；M0 仍只输出首目标，并把
+其余路径记录为 deferred multi-file 风险。
 
 验证意图只从 README、项目配置和测试配置证据推导，并始终记录
 `executed=false`。README 中的严格命令声明可以形成 pytest、ruff 或 mypy 意图；

@@ -123,6 +123,8 @@ class RepositorySnapshot:
     documents: tuple[InspectedDocument, ...]
     selection_truncated: bool
     limits: InspectionLimits
+    directory_paths: tuple[str, ...] = ()
+    opaque_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.repository, InspectedRepository):
@@ -150,8 +152,32 @@ class RepositorySnapshot:
                 ) from exc
         if len(self.all_paths) != len(set(self.all_paths)):
             raise ValueError("repository snapshot all_paths must be unique")
-        if len(self.all_paths) > self.limits.max_tree_entries:
-            raise ValueError("repository snapshot all_paths exceed the inspection tree limit")
+
+        for field_name, paths in (
+            ("directory_paths", self.directory_paths),
+            ("opaque_paths", self.opaque_paths),
+        ):
+            if not isinstance(paths, tuple):
+                raise ValueError(f"repository snapshot {field_name} must be an immutable tuple")
+            for path in paths:
+                if not isinstance(path, str):
+                    raise ValueError(
+                        f"repository snapshot {field_name} must contain safe repository paths"
+                    )
+                try:
+                    validate_repository_path(path)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"repository snapshot {field_name} must contain safe repository paths"
+                    ) from exc
+            if len(paths) != len(set(paths)):
+                raise ValueError(f"repository snapshot {field_name} must be unique")
+
+        claimed_paths = (*self.all_paths, *self.directory_paths, *self.opaque_paths)
+        if len(claimed_paths) != len(set(claimed_paths)):
+            raise ValueError("repository snapshot path kinds must be disjoint")
+        if len(claimed_paths) > self.limits.max_tree_entries:
+            raise ValueError("repository snapshot paths exceed the inspection tree limit")
 
         if not isinstance(self.documents, tuple):
             raise ValueError("repository snapshot documents must be an immutable tuple")

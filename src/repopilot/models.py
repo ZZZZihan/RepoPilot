@@ -215,11 +215,10 @@ class IssueInput(StrictModel):
 
     @field_validator("title")
     @classmethod
-    def normalize_title(cls, value: str) -> str:
-        normalized = " ".join(value.split())
-        if not normalized:
+    def validate_title(cls, value: str) -> str:
+        if not any(not character.isspace() for character in value):
             raise ValueError("issue title must contain visible text")
-        return normalized
+        return value
 
     @field_validator("url")
     @classmethod

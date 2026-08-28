@@ -50,10 +50,13 @@ URL/URI token 与 Markdown destination 永远不是仓库目标。若这种安�
 不增加字段长度的可回放形式。冒号形式同样接受礼貌词和连接词，例如
 `请修改:src/pkg/a.py` 与 `并创建:src/pkg/new.py`。
 路径已存在于 `tree/all_paths`，规划器只有在取得该路径证据后才能生成 `MODIFY`；
-否则请求会 fail closed 为 `413 inspection_limit_exceeded`。若该显式路径不在 tree 中，
-则按 Issue 原路径生成 `CREATE`。没有显式路径时，只有文件树本身确实没有对应类别
-才会推断常规 `CREATE` 路径；受界检查缺失不能伪装成新文件。同类多路径都会先
-完成 missing/ambiguous evidence 审计，但 M0 只输出首目标并记录 deferred multi-file 风险。
+否则请求会 fail closed 为 `413 inspection_limit_exceeded`。若该显式路径不在 regular-file
+tree 中，只有在它的精确位置未被目录、符号链接或子模块占用，且祖先路径不是 regular
+file、符号链接或子模块时，才按 Issue 原路径生成 `CREATE`；冲突返回
+`422 conflicting_issue_path`。没有显式路径时，只有文件树本身确实没有对应类别才会
+推断合法 Python 标识符组成的常规 `CREATE` 路径，并应用同一 namespace 检查；受界检查
+缺失不能伪装成新文件。同类多路径都会先完成 missing/ambiguous evidence 审计，但 M0
+只输出首目标并记录 deferred multi-file 风险。
 
 文件引用还受 Schema 级动作不变量约束：`inspect`、`modify` 和 `verify` 必须指向快照
 中已存在的路径，并由同路径证据支持；`create` 必须指向快照中不存在的路径，不能与

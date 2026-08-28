@@ -31,7 +31,7 @@ from repopilot.inspection import (
 )
 from repopilot.models import GitHubRepositoryInput, InspectedRepository
 
-_SNAPSHOT_DOMAIN = b"RepoPilot.FixedRootSnapshot\x00v1\x00"
+_SNAPSHOT_DOMAIN = b"RepoPilot.FixedRootSnapshot\x00v2\x00"
 _READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -84,6 +84,9 @@ class FixedRootRepositoryInspector:
             )
 
         fixture_files: list[_FixtureFile] = []
+        directory_paths: list[str] = []
+        opaque_paths: list[str] = []
+        tree_entry_count = 0
         skipped_unsafe = False
         for path in self._root.rglob("*"):
             try:
@@ -92,12 +95,23 @@ class FixedRootRepositoryInspector:
                 raise RepositoryUpstreamError(
                     "fixture repository changed while its file list was inspected"
                 ) from exc
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-                continue
             relative = path.relative_to(self._root).as_posix()
             if ".git" in path.relative_to(self._root).parts or not is_safe_repository_path(
                 relative
             ):
+                if ".git" not in path.relative_to(self._root).parts:
+                    skipped_unsafe = True
+                continue
+            tree_entry_count += 1
+            if tree_entry_count > self._limits.max_tree_entries:
+                raise InspectionLimitExceededError(
+                    f"repository has more than {self._limits.max_tree_entries} tree entries"
+                )
+            if stat.S_ISDIR(metadata.st_mode):
+                directory_paths.append(relative)
+                continue
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                opaque_paths.append(relative)
                 continue
             try:
                 resolved = path.resolve(strict=True)
@@ -107,6 +121,7 @@ class FixedRootRepositoryInspector:
                 ) from exc
             if resolved != path or not resolved.is_relative_to(self._root):
                 skipped_unsafe = True
+                opaque_paths.append(relative)
                 continue
             fixture_files.append(
                 _FixtureFile(
@@ -121,11 +136,9 @@ class FixedRootRepositoryInspector:
                     git_mode=b"100755" if metadata.st_mode & stat.S_IXUSR else b"100644",
                 )
             )
-            if len(fixture_files) > self._limits.max_tree_entries:
-                raise InspectionLimitExceededError(
-                    f"repository has more than {self._limits.max_tree_entries} files"
-                )
         fixture_files.sort(key=lambda item: (item.path.casefold(), item.path))
+        directory_paths.sort(key=lambda path: (path.casefold(), path))
+        opaque_paths.sort(key=lambda path: (path.casefold(), path))
         entries = [TreeEntry(path=item.path, size=item.size) for item in fixture_files]
 
         if not entries:
@@ -138,6 +151,16 @@ class FixedRootRepositoryInspector:
         documents: list[InspectedDocument] = []
         snapshot_hash = hashlib.sha256()
         snapshot_hash.update(_SNAPSHOT_DOMAIN)
+        for claim_kind, paths in (
+            (b"D", directory_paths),
+            (b"O", opaque_paths),
+        ):
+            snapshot_hash.update(claim_kind)
+            snapshot_hash.update(struct.pack(">Q", len(paths)))
+            for claimed_path in paths:
+                encoded_claim = claimed_path.encode("utf-8")
+                snapshot_hash.update(struct.pack(">I", len(encoded_claim)))
+                snapshot_hash.update(encoded_claim)
         snapshot_hash.update(struct.pack(">Q", len(fixture_files)))
 
         skipped_non_text = skipped_unsafe
@@ -213,6 +236,8 @@ class FixedRootRepositoryInspector:
             documents=tuple(documents),
             selection_truncated=selection.truncated or skipped_non_text,
             limits=self._limits,
+            directory_paths=tuple(directory_paths),
+            opaque_paths=tuple(opaque_paths),
         )
 
     def _read_stable_file(

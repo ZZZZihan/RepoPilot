@@ -154,6 +154,27 @@ def test_explicit_absent_paths_return_exact_create_references(
     assert set(test_reference["evidence_ids"]) <= evidence_ids
 
 
+def test_conflicting_create_path_returns_stable_error_without_persistence(
+    settings: Settings,
+    fixture_inspector: FixedRootRepositoryInspector,
+) -> None:
+    request = deepcopy(CREATE_REQUEST)
+    request["issue"]["title"] = "Add a nested calculator module"
+    request["issue"]["body"] = (
+        "Create `src/tinycalc/calculator.py/child.py` and preserve current behavior."
+    )
+    app = create_app(settings=settings, inspector=fixture_inspector)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/plans", json=request)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "conflicting_issue_path"
+    assert "src/tinycalc/calculator.py" in response.json()["error"]["message"]
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM plans").fetchone() == (0,)
+
+
 @pytest.mark.parametrize(
     ("title", "separator_example", "literal_example"),
     (

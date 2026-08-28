@@ -7,7 +7,11 @@ from time import perf_counter
 
 import pytest
 
-from repopilot.errors import AmbiguousIssuePathError, InspectionLimitExceededError
+from repopilot.errors import (
+    AmbiguousIssuePathError,
+    ConflictingIssuePathError,
+    InspectionLimitExceededError,
+)
 from repopilot.inspection import (
     InspectedDocument,
     InspectionLimits,
@@ -330,6 +334,45 @@ def test_inferred_paths_are_only_used_when_source_and_test_categories_are_absent
     assert not any("Low-confidence" in risk for risk in plan.risks)
 
 
+@pytest.mark.parametrize(
+    ("repository_name", "expected_path"),
+    [
+        ("123-project", "src/repopilot_123_project/feature.py"),
+        ("class", "src/repopilot_class/feature.py"),
+    ],
+)
+def test_inferred_source_package_is_a_valid_python_identifier(
+    repository_name: str,
+    expected_path: str,
+) -> None:
+    snapshot = _semantic_snapshot()
+    documents = tuple(
+        document
+        for document in snapshot.documents
+        if document.category not in {EvidenceCategory.SOURCE, EvidenceCategory.TEST}
+    )
+    snapshot_without_code = replace(
+        snapshot,
+        repository=InspectedRepository(
+            url=f"https://github.com/acme/{repository_name}",
+            owner="acme",
+            name=repository_name,
+            ref="main",
+            tree_sha="b" * 64,
+        ),
+        documents=documents,
+        all_paths=tuple(document.path for document in documents),
+    )
+
+    plan = PlanBuilder().build(
+        snapshot_without_code,
+        IssueInput(number=47, title="Improve this", body="Make it better."),
+    )
+    implementation = next(step for step in plan.steps if step.kind is StepKind.IMPLEMENTATION)
+
+    assert implementation.file_references[0].path == expected_path
+
+
 def test_uninspected_tree_source_and_test_fail_closed_instead_of_creating_paths() -> None:
     snapshot = _semantic_snapshot()
     readme = next(
@@ -375,6 +418,96 @@ def test_explicit_absent_source_and_test_paths_create_exact_references() -> None
     assert test_reference.action is FileAction.CREATE
     assert test_reference.exists is False
     assert not any("Low-confidence" in risk for risk in plan.risks)
+
+
+def test_explicit_create_rejects_existing_file_ancestor() -> None:
+    with pytest.raises(ConflictingIssuePathError, match="already occupies"):
+        PlanBuilder().build(
+            _semantic_snapshot(),
+            IssueInput(
+                number=48,
+                title="Create `src/arithmetic/calculator.py/child.py`.",
+                body="Add the nested implementation.",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("directory_paths", "opaque_paths", "target"),
+    [
+        (("src/arithmetic/new.py",), (), "src/arithmetic/new.py"),
+        ((), ("src/arithmetic/new.py",), "src/arithmetic/new.py"),
+        ((), ("src/vendor",), "src/vendor/child.py"),
+    ],
+)
+def test_explicit_create_rejects_non_regular_namespace_claims(
+    directory_paths: tuple[str, ...],
+    opaque_paths: tuple[str, ...],
+    target: str,
+) -> None:
+    snapshot = replace(
+        _semantic_snapshot(),
+        directory_paths=directory_paths,
+        opaque_paths=opaque_paths,
+    )
+
+    with pytest.raises(ConflictingIssuePathError, match="already occupies"):
+        PlanBuilder().build(
+            snapshot,
+            IssueInput(
+                number=50,
+                title=f"Create `{target}`.",
+                body="Add the implementation.",
+            ),
+        )
+
+
+def test_inferred_create_rejects_non_regular_namespace_claim() -> None:
+    snapshot = _semantic_snapshot()
+    documents = tuple(
+        document
+        for document in snapshot.documents
+        if document.category not in {EvidenceCategory.SOURCE, EvidenceCategory.TEST}
+    )
+    snapshot_without_code = replace(
+        snapshot,
+        documents=documents,
+        all_paths=tuple(document.path for document in documents),
+        opaque_paths=("src",),
+    )
+
+    with pytest.raises(ConflictingIssuePathError, match="already occupies"):
+        PlanBuilder().build(
+            snapshot_without_code,
+            IssueInput(number=51, title="Improve this", body="Make it better."),
+        )
+
+
+def test_explicit_existing_path_preserves_internal_whitespace() -> None:
+    document = _document(
+        "src/arithmetic/double  space.py",
+        EvidenceCategory.SOURCE,
+        "VALUE = 1\n",
+    )
+    snapshot = _semantic_snapshot()
+    snapshot = replace(
+        snapshot,
+        all_paths=(*snapshot.all_paths, document.path),
+        documents=(*snapshot.documents, document),
+    )
+
+    plan = PlanBuilder().build(
+        snapshot,
+        IssueInput(
+            number=49,
+            title="Update `src/arithmetic/double  space.py`.",
+            body="Preserve the existing behavior.",
+        ),
+    )
+    implementation = next(step for step in plan.steps if step.kind is StepKind.IMPLEMENTATION)
+
+    assert implementation.file_references[0].path == document.path
+    assert implementation.file_references[0].action is FileAction.MODIFY
 
 
 def test_explicit_existing_uninspected_path_fails_with_other_source_evidence() -> None:

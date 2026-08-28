@@ -64,6 +64,11 @@ class AmbiguousIssuePathError(RepoPilotError):
     status_code = 422
 
 
+class ConflictingIssuePathError(RepoPilotError):
+    code = "conflicting_issue_path"
+    status_code = 422
+
+
 class PlanNotFoundError(RepoPilotError):
     code = "plan_not_found"
     status_code = 404

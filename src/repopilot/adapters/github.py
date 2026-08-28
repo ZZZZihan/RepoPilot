@@ -37,6 +37,9 @@ from repopilot.models import GitHubRepositoryInput, InspectedRepository
 
 _GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _REGULAR_BLOB_MODES = {"100644", "100755"}
+_SYMLINK_BLOB_MODE = "120000"
+_TREE_MODE = "040000"
+_SUBMODULE_MODE = "160000"
 
 
 class GitHubRepositoryInspector:
@@ -114,11 +117,10 @@ class GitHubRepositoryInspector:
             if not _GIT_OBJECT_ID.fullmatch(tree_sha):
                 raise RepositoryUpstreamError("GitHub returned an invalid tree identifier")
 
-            entries = self._parse_entries(raw_tree, oid_length=len(tree_sha))
-            if len(entries) > self._limits.max_tree_entries:
-                raise InspectionLimitExceededError(
-                    f"repository has more than {self._limits.max_tree_entries} files"
-                )
+            entries, directory_paths, opaque_paths = self._parse_entries(
+                raw_tree,
+                oid_length=len(tree_sha),
+            )
             if not entries:
                 raise UnsupportedRepositoryError("repository has no inspectable files")
             if not has_python_footprint(entries):
@@ -166,10 +168,19 @@ class GitHubRepositoryInspector:
                 documents=documents,
                 selection_truncated=selection.truncated or len(documents) != len(selection.entries),
                 limits=self._limits,
+                directory_paths=directory_paths,
+                opaque_paths=opaque_paths,
             )
 
-    def _parse_entries(self, raw_tree: list[Any], *, oid_length: int) -> list[TreeEntry]:
+    def _parse_entries(
+        self,
+        raw_tree: list[Any],
+        *,
+        oid_length: int,
+    ) -> tuple[list[TreeEntry], tuple[str, ...], tuple[str, ...]]:
         entries: list[TreeEntry] = []
+        directory_paths: list[str] = []
+        opaque_paths: list[str] = []
         seen_paths: set[str] = set()
         for item in raw_tree:
             if not isinstance(item, dict):
@@ -177,34 +188,57 @@ class GitHubRepositoryInspector:
             entry_type = item.get("type")
             if entry_type not in {"blob", "tree", "commit"}:
                 raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
-            if entry_type != "blob":
-                continue
             path = item.get("path")
-            size = item.get("size")
-            blob_sha = item.get("sha")
+            object_id = item.get("sha")
             mode = item.get("mode")
+            malformed_message = (
+                "GitHub returned a malformed blob tree entry"
+                if entry_type == "blob"
+                else "GitHub returned a malformed tree entry"
+            )
             if not isinstance(path, str) or not is_safe_repository_path(path):
-                raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
+                raise RepositoryUpstreamError(malformed_message)
+            if (
+                not isinstance(object_id, str)
+                or not _GIT_OBJECT_ID.fullmatch(object_id)
+                or len(object_id) != oid_length
+            ):
+                raise RepositoryUpstreamError(malformed_message)
+            if path in seen_paths:
+                raise RepositoryUpstreamError("GitHub returned a duplicate tree path")
+            seen_paths.add(path)
+            if len(seen_paths) > self._limits.max_tree_entries:
+                raise InspectionLimitExceededError(
+                    f"repository has more than {self._limits.max_tree_entries} tree entries"
+                )
+
+            if entry_type == "tree":
+                if mode != _TREE_MODE:
+                    raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
+                directory_paths.append(path)
+                continue
+            if entry_type == "commit":
+                if mode != _SUBMODULE_MODE:
+                    raise RepositoryUpstreamError("GitHub returned a malformed tree entry")
+                opaque_paths.append(path)
+                continue
+
+            size = item.get("size")
             if not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
-            if (
-                not isinstance(blob_sha, str)
-                or not _GIT_OBJECT_ID.fullmatch(blob_sha)
-                or len(blob_sha) != oid_length
-            ):
-                raise RepositoryUpstreamError("GitHub returned a malformed blob tree entry")
-            if not isinstance(mode, str) or mode not in _REGULAR_BLOB_MODES:
+            if mode in _REGULAR_BLOB_MODES:
+                entries.append(TreeEntry(path=path, size=size, blob_sha=object_id.lower()))
+            elif mode == _SYMLINK_BLOB_MODE:
+                opaque_paths.append(path)
+            else:
                 raise RepositoryUpstreamError(
                     "GitHub returned a non-regular or malformed blob tree entry"
                 )
-            if path in seen_paths:
-                raise RepositoryUpstreamError("GitHub returned a duplicate blob tree path")
-            seen_paths.add(path)
-            entries.append(TreeEntry(path=path, size=size, blob_sha=blob_sha.lower()))
-            if len(entries) > self._limits.max_tree_entries:
-                break
+
         entries.sort(key=lambda entry: (entry.path.casefold(), entry.path))
-        return entries
+        directory_paths.sort(key=lambda path: (path.casefold(), path))
+        opaque_paths.sort(key=lambda path: (path.casefold(), path))
+        return entries, tuple(directory_paths), tuple(opaque_paths)
 
     async def _fetch_document(
         self,

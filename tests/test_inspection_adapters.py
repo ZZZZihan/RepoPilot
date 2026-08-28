@@ -114,6 +114,8 @@ def _repository_snapshot(
     all_paths: tuple[str, ...] | None = None,
     documents: tuple[InspectedDocument, ...] | None = None,
     limits: InspectionLimits | None = None,
+    directory_paths: tuple[str, ...] = (),
+    opaque_paths: tuple[str, ...] = (),
 ) -> RepositorySnapshot:
     inspected_documents = documents if documents is not None else (_inspected_document(),)
     repository_paths = (
@@ -133,6 +135,8 @@ def _repository_snapshot(
         documents=inspected_documents,
         selection_truncated=False,
         limits=limits or InspectionLimits(),
+        directory_paths=directory_paths,
+        opaque_paths=opaque_paths,
     )
 
 
@@ -186,6 +190,22 @@ def test_repository_snapshot_requires_unique_documents_with_tree_membership() ->
         _repository_snapshot(
             all_paths=(document.path,),
             documents=(foreign_document,),
+        )
+
+
+def test_repository_snapshot_requires_safe_unique_disjoint_path_claims() -> None:
+    with pytest.raises(ValueError, match="directory_paths must be an immutable tuple"):
+        _repository_snapshot(directory_paths=["src"])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="opaque_paths must contain safe repository paths"):
+        _repository_snapshot(opaque_paths=("../linked.py",))
+    with pytest.raises(ValueError, match="directory_paths must be unique"):
+        _repository_snapshot(directory_paths=("src", "src"))
+    with pytest.raises(ValueError, match="path kinds must be disjoint"):
+        _repository_snapshot(directory_paths=("src/example.py",))
+    with pytest.raises(ValueError, match="paths exceed the inspection tree limit"):
+        _repository_snapshot(
+            directory_paths=("src",),
+            limits=InspectionLimits(max_tree_entries=1, max_selected_files=1),
         )
 
 
@@ -389,7 +409,7 @@ def test_github_adapter_fails_closed_on_malformed_blob_entry(field: str, value: 
         _inspect(_github_transport(tree=_tree_response([entry])))
 
 
-@pytest.mark.parametrize("mode", [None, "", "100600", "120000", "160000"])
+@pytest.mark.parametrize("mode", [None, "", "100600", "160000"])
 def test_github_adapter_rejects_non_regular_blob_modes(mode: object) -> None:
     payload = b"[project]\n"
     entry = _tree_entry("pyproject.toml", payload)
@@ -403,8 +423,60 @@ def test_github_adapter_rejects_duplicate_blob_paths() -> None:
     payload = b"[project]\n"
     entry = _tree_entry("pyproject.toml", payload)
 
-    with pytest.raises(RepositoryUpstreamError, match="duplicate blob tree path"):
+    with pytest.raises(RepositoryUpstreamError, match="duplicate tree path"):
         _inspect(_github_transport(tree=_tree_response([entry, dict(entry)])))
+
+
+def test_github_adapter_preserves_non_regular_namespace_claims() -> None:
+    project = b"[project]\n"
+    project_sha = _git_blob_oid(project)
+    symlink_payload = b"module.py"
+    symlink_sha = _git_blob_oid(symlink_payload)
+    entries = [
+        {
+            "path": "src",
+            "type": "tree",
+            "sha": "b" * 40,
+            "mode": "040000",
+        },
+        _tree_entry(
+            "src/linked.py",
+            symlink_payload,
+            sha=symlink_sha,
+            mode="120000",
+        ),
+        {
+            "path": "vendor/library",
+            "type": "commit",
+            "sha": "c" * 40,
+            "mode": "160000",
+        },
+        _tree_entry("pyproject.toml", project, sha=project_sha),
+    ]
+    requests: list[httpx.Request] = []
+
+    snapshot = _inspect(
+        _github_transport(
+            tree=_tree_response(entries),
+            blobs={
+                project_sha: httpx.Response(
+                    200,
+                    json={
+                        "sha": project_sha,
+                        "size": len(project),
+                        "encoding": "base64",
+                        "content": base64.b64encode(project).decode("ascii"),
+                    },
+                )
+            },
+            requests=requests,
+        )
+    )
+
+    assert snapshot.all_paths == ("pyproject.toml",)
+    assert snapshot.directory_paths == ("src",)
+    assert snapshot.opaque_paths == ("src/linked.py", "vendor/library")
+    assert sum("/git/blobs/" in request.url.path for request in requests) == 1
 
 
 @pytest.mark.parametrize(
@@ -678,7 +750,7 @@ def test_github_adapter_stops_at_tree_entry_bound() -> None:
     ]
     limits = InspectionLimits(max_tree_entries=2, max_selected_files=2)
 
-    with pytest.raises(InspectionLimitExceededError, match="more than 2 files"):
+    with pytest.raises(InspectionLimitExceededError, match="more than 2 tree entries"):
         _inspect(_github_transport(tree=_tree_response(entries)), limits=limits)
 
 
@@ -884,7 +956,7 @@ def test_fixed_root_adapter_stops_at_tree_entry_bound(
         limits=limits,
     )
 
-    with pytest.raises(InspectionLimitExceededError, match="more than 3 files"):
+    with pytest.raises(InspectionLimitExceededError, match="more than 3 tree entries"):
         asyncio.run(
             inspector.inspect(
                 GitHubRepositoryInput(url="https://github.com/acme/tiny-python", ref="main")
@@ -906,6 +978,33 @@ def _fixed_root_snapshot(
     return asyncio.run(
         inspector.inspect(GitHubRepositoryInput(url="https://github.com/acme/fixture", ref="main"))
     )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink path claims are POSIX-only")
+def test_fixed_root_adapter_preserves_directory_and_symlink_claims(tmp_path: Path) -> None:
+    root = tmp_path / "fixture"
+    source_directory = root / "src"
+    source_directory.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (source_directory / "linked.py").symlink_to("missing.py")
+
+    snapshot = _fixed_root_snapshot(root)
+
+    assert snapshot.all_paths == ("pyproject.toml",)
+    assert snapshot.directory_paths == ("src",)
+    assert snapshot.opaque_paths == ("src/linked.py",)
+
+
+def test_fixed_root_tree_identity_hashes_path_claims(tmp_path: Path) -> None:
+    root = tmp_path / "fixture"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    before = _fixed_root_snapshot(root)
+    (root / "src").mkdir()
+    after = _fixed_root_snapshot(root)
+
+    assert before.repository.tree_sha != after.repository.tree_sha
 
 
 def test_fixed_root_tree_identity_hashes_unselected_file_content(tmp_path: Path) -> None:

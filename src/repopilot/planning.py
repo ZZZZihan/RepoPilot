@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import keyword
 import re
 import tomllib
 from bisect import bisect_left
@@ -17,6 +18,7 @@ from uuid import UUID, uuid4
 
 from repopilot.errors import (
     AmbiguousIssuePathError,
+    ConflictingIssuePathError,
     InspectionLimitExceededError,
     IssueRepositoryMismatchError,
     RepositoryUpstreamError,
@@ -863,15 +865,13 @@ class PlanBuilder:
                     continue
 
             if existing_path is None:
-                if (
-                    requested_category
-                    in {
-                        EvidenceCategory.SOURCE,
-                        EvidenceCategory.TEST,
-                    }
-                    and requested_category not in targets
-                ):
-                    targets[requested_category] = (reference, False)
+                if requested_category in {
+                    EvidenceCategory.SOURCE,
+                    EvidenceCategory.TEST,
+                }:
+                    cls._assert_creatable_path(snapshot, reference)
+                    if requested_category not in targets:
+                        targets[requested_category] = (reference, False)
             elif existing_path not in evidence_by_path:
                 missing_evidence.append(existing_path)
             else:
@@ -904,6 +904,30 @@ class PlanBuilder:
                 "inspection limits or narrow the repository before planning"
             )
         return targets
+
+    @staticmethod
+    def _assert_creatable_path(snapshot: RepositorySnapshot, path: str) -> None:
+        """Reject CREATE targets whose exact path or ancestor cannot become a file."""
+
+        exact_opaque_claims = (*snapshot.directory_paths, *snapshot.opaque_paths)
+        exact_matches = sorted(
+            claim for claim in exact_opaque_claims if claim.casefold() == path.casefold()
+        )
+        blocking_claims = (*snapshot.all_paths, *snapshot.opaque_paths)
+        parts = PurePosixPath(path).parts
+        ancestor_casefolds = {"/".join(parts[:index]).casefold() for index in range(1, len(parts))}
+        ancestor_matches = sorted(
+            claim for claim in blocking_claims if claim.casefold() in ancestor_casefolds
+        )
+        conflicts = (*exact_matches, *ancestor_matches)
+        if not conflicts:
+            return
+
+        conflict = conflicts[0]
+        raise ConflictingIssuePathError(
+            f"Cannot create Issue path {path!r}: repository path {conflict!r} already "
+            "occupies that path namespace"
+        )
 
     @staticmethod
     def _planning_category(path: str) -> EvidenceCategory | None:
@@ -6318,11 +6342,12 @@ class PlanBuilder:
                     reason=reason,
                 )
             ]
-        package_name = _NON_IDENTIFIER.sub("_", snapshot.repository.name.lower()).strip("_")
-        package_name = package_name or "repopilot_change"
+        package_name = self._inferred_package_name(snapshot.repository.name)
+        path = f"src/{package_name}/feature.py"
+        self._assert_creatable_path(snapshot, path)
         return [
             FileReference(
-                path=f"src/{package_name}/feature.py",
+                path=path,
                 action=FileAction.CREATE,
                 exists=False,
                 reason=(
@@ -6392,9 +6417,11 @@ class PlanBuilder:
         anchor = config_documents[0] if config_documents else fallback_document
         issue_slug = _NON_IDENTIFIER.sub("_", snapshot.repository.name.lower()).strip("_")
         issue_slug = issue_slug or "feature"
+        path = f"tests/test_{issue_slug}.py"
+        self._assert_creatable_path(snapshot, path)
         return [
             FileReference(
-                path=f"tests/test_{issue_slug}.py",
+                path=path,
                 action=FileAction.CREATE,
                 exists=False,
                 reason=(
@@ -6404,6 +6431,16 @@ class PlanBuilder:
                 evidence_ids=[evidence_by_path[anchor.path].id],
             )
         ]
+
+    @staticmethod
+    def _inferred_package_name(repository_name: str) -> str:
+        package_name = _NON_IDENTIFIER.sub("_", repository_name.casefold()).strip("_")
+        package_name = package_name or "change"
+        if not package_name.isidentifier() or keyword.iskeyword(package_name):
+            package_name = f"repopilot_{package_name}"
+        if not package_name.isidentifier() or keyword.iskeyword(package_name):
+            raise AssertionError("inferred Python package name must be importable")
+        return package_name
 
     @staticmethod
     def _verification_intents(
